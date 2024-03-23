@@ -19,18 +19,29 @@
 #define ENCODER_OPTIMIZE_INTERRUPTS
 #include "encoder.h"
 #include "kinematics.h"
+#include "steering.h"
+#include <MsTimer2.h>
 
-#define SAMPLE_TIME 10 //s
+void flash();
+void sampleMotors(bool show_summary);
+void printSummary();
 
-Encoder motor1_encoder(MOTOR1_ENCODER_A, MOTOR1_ENCODER_B, COUNTS_PER_REV1, MOTOR1_ENCODER_INV);
-Encoder motor2_encoder(MOTOR2_ENCODER_A, MOTOR2_ENCODER_B, COUNTS_PER_REV2, MOTOR2_ENCODER_INV);
-Encoder motor3_encoder(MOTOR3_ENCODER_A, MOTOR3_ENCODER_B, COUNTS_PER_REV3, MOTOR3_ENCODER_INV);
-Encoder motor4_encoder(MOTOR4_ENCODER_A, MOTOR4_ENCODER_B, COUNTS_PER_REV4, MOTOR4_ENCODER_INV);
+#define SAMPLE_TIME 5 //s
+
+// Encoder motor1_encoder(MOTOR1_ENCODER_A, MOTOR1_ENCODER_B, COUNTS_PER_REV1, MOTOR1_ENCODER_INV);
+// Encoder motor2_encoder(MOTOR2_ENCODER_A, MOTOR2_ENCODER_B, COUNTS_PER_REV2, MOTOR2_ENCODER_INV);
+// Encoder motor3_encoder(MOTOR3_ENCODER_A, MOTOR3_ENCODER_B, COUNTS_PER_REV3, MOTOR3_ENCODER_INV);
+// Encoder motor4_encoder(MOTOR4_ENCODER_A, MOTOR4_ENCODER_B, COUNTS_PER_REV4, MOTOR4_ENCODER_INV);
 
 Motor motor1_controller(PWM_FREQUENCY, PWM_BITS, MOTOR1_INV, MOTOR1_PWM, MOTOR1_IN_A, MOTOR1_IN_B);
-Motor motor2_controller(PWM_FREQUENCY, PWM_BITS, MOTOR2_INV, MOTOR2_PWM, MOTOR2_IN_A, MOTOR2_IN_B);
-Motor motor3_controller(PWM_FREQUENCY, PWM_BITS, MOTOR3_INV, MOTOR3_PWM, MOTOR3_IN_A, MOTOR3_IN_B);
-Motor motor4_controller(PWM_FREQUENCY, PWM_BITS, MOTOR4_INV, MOTOR4_PWM, MOTOR4_IN_A, MOTOR4_IN_B);
+// Motor motor2_controller(PWM_FREQUENCY, PWM_BITS, MOTOR2_INV, MOTOR2_PWM, MOTOR2_IN_A, MOTOR2_IN_B);
+// Motor motor3_controller(PWM_FREQUENCY, PWM_BITS, MOTOR3_INV, MOTOR3_PWM, MOTOR3_IN_A, MOTOR3_IN_B);
+// Motor motor4_controller(PWM_FREQUENCY, PWM_BITS, MOTOR4_INV, MOTOR4_PWM, MOTOR4_IN_A, MOTOR4_IN_B);
+
+// Steering motor
+Motor motor_str_controller(PWM_FREQUENCY, PWM_BITS, MOTOR_STR_INV, MOTOR_STR_PWM, MOTOR_STR_IN_A, MOTOR_STR_IN_B);
+
+Steering steering(STEERING_FULL_RANGE_DEG, motor_str_controller);
 
 Kinematics kinematics(
     Kinematics::LINO_BASE, 
@@ -43,14 +54,19 @@ Kinematics kinematics(
 );
 
 long long int counts_per_rev[4];
-int total_motors = 4;
-Motor *motors[4] = {&motor1_controller, &motor2_controller, &motor3_controller, &motor4_controller};
-Encoder *encoders[4] = {&motor1_encoder, &motor2_encoder, &motor3_encoder, &motor4_encoder};
-String labels[4] = {"FRONT LEFT - M1: ", "FRONT RIGHT - M2: ", "REAR LEFT - M3: ", "REAR RIGHT - M4: "};
+int total_motors = 1;
+Motor *motors[1] = {&motor1_controller};
+//Encoder *encoders[4] = {&motor1_encoder, &motor2_encoder, &motor3_encoder, &motor4_encoder};
+String labels[1] = {"DRIVE - M1: "};//, "FRONT RIGHT - M2: ", "REAR LEFT - M3: ", "REAR RIGHT - M4: "};
 
 void setup()
 {
-    Serial.begin(9600);
+    Serial.begin(115200);
+    // initialize LED digital pin as an output.
+    pinMode(LED_BUILTIN, OUTPUT);
+    MsTimer2::set(500, flash);
+    MsTimer2::start();
+
     while (!Serial) {
     }
     Serial.println("Sampling process will spin the motors at its maximum RPM.");
@@ -60,6 +76,9 @@ void setup()
     Serial.println("Type 'sample' and press enter to spin the motors with motor summary.");
     Serial.println("Press enter to clear command.");
     Serial.println("");
+
+    motor1_controller.init();
+    motor_str_controller.init();
 }
 
 void loop()
@@ -72,28 +91,33 @@ void loop()
         cmd.concat(character); 
         Serial.print(character);
         delay(1);
-        if(character == '\r' and cmd.equals("spin\r"))
-        {
-            cmd = "";
-            Serial.println("\r\n");
-            sampleMotors(0);
-        }
-        else if(character == '\r' and cmd.equals("sample\r"))
-        {
-            cmd = "";
-            Serial.println("\r\n");
-            sampleMotors(1);
-        }
-        else if(character == '\r')
+        if(character == '\n' and cmd.equals("spin\r\n"))
         {
             Serial.println("");
+            sampleMotors(0);
+            Serial.println("Enter next command");
+            cmd = "";
+        }
+        else if(character == '\n' and cmd.equals("sample\r\n"))
+        {
+            Serial.println("");
+            sampleMotors(1);
+            Serial.println("Enter next command");
+            cmd = "";
+        }
+        else if(character == '\n')
+        {
+            cmd = "";
+            Serial.println("Enter next command");
             cmd = "";
         }
     }
 }
 
+
 void sampleMotors(bool show_summary)
 {
+    Serial.println("sampleMotors");
     if(Kinematics::LINO_BASE == Kinematics::DIFFERENTIAL_DRIVE)
     {
         total_motors = 2;
@@ -111,13 +135,15 @@ void sampleMotors(bool show_summary)
         unsigned long start_time = micros();
         unsigned long last_status = micros();
 
-        encoders[i]->write(0);
+        //encoders[i]->write(0);
         while(true)
         {
             if(micros() - start_time >= SAMPLE_TIME * 1000000)
             {
                 motors[i]->spin(0);
+                steering.set_position_deg(0);
                 Serial.println("");
+                steering.update(true);
                 break;
             }
 
@@ -127,48 +153,53 @@ void sampleMotors(bool show_summary)
                 Serial.print(".");
             }
 
-            motors[i]->spin(PWM_MAX);
+            steering.set_position_deg(20);
+            //motors[i]->spin(PWM_MAX * 0.15);
+            
+            steering.update(true);
+            delay(50);
         }
         
-        counts_per_rev[i] = encoders[i]->read() / total_rev;
+        //counts_per_rev[i] = encoders[i]->read() / total_rev;
     }
     if(show_summary)
         printSummary();
 }
 
+
 void printSummary()
 {
-    Serial.println("\r\n================MOTOR ENCODER READINGS================");
-    Serial.print(labels[0]);
-    Serial.print(encoders[0]->read());
-    Serial.print(" ");
+    // Serial.println("\r\n================MOTOR ENCODER READINGS================");
+    // Serial.print(labels[0]);
+    // Serial.print(encoders[0]->read());
+    // Serial.print(" ");
 
-    Serial.print(labels[1]);
-    Serial.println(encoders[1]->read());
+    // Serial.print(labels[1]);
+    // Serial.println(encoders[1]->read());
 
-    Serial.print(labels[2]);
-    Serial.print(encoders[2]->read());
-    Serial.print(" ");
+    // Serial.print(labels[2]);
+    // Serial.print(encoders[2]->read());
+    // Serial.print(" ");
 
-    Serial.print(labels[3]);
-    Serial.println(encoders[3]->read());
-    Serial.println("");
+    // Serial.print(labels[3]);
+    // Serial.println(encoders[3]->read());
+    // Serial.println("");
 
-    Serial.println("================COUNTS PER REVOLUTION=================");
-    Serial.print(labels[0]);
-    Serial.print(counts_per_rev[0]);
-    Serial.print(" ");
+    // Serial.println("================COUNTS PER REVOLUTION=================");
+    // Serial.print(labels[0]);
+    // Serial.print(counts_per_rev[0]);
+    // Serial.print(" ");
 
-    Serial.print(labels[1]);
-    Serial.println(counts_per_rev[1]);
+    // Serial.print(labels[1]);
+    // Serial.println(counts_per_rev[1]);
     
-    Serial.print(labels[2]);
-    Serial.print(counts_per_rev[2]);
-    Serial.print(" ");
+    // Serial.print(labels[2]);
+    // Serial.print(counts_per_rev[2]);
+    // Serial.print(" ");
 
-    Serial.print(labels[3]);
-    Serial.println(counts_per_rev[3]);
-    Serial.println("");
+    // Serial.print(labels[3]);
+    // Serial.println(counts_per_rev[3]);
+    // Serial.println("");
 
     Serial.println("====================MAX VELOCITIES====================");
     float max_rpm = kinematics.getMaxRPM();
@@ -183,4 +214,12 @@ void printSummary()
     Serial.print("Angular Velocity: +- ");
     Serial.print(max_angular.angular_z);
     Serial.println(" rad/s");
+}
+
+
+void flash()
+{
+    static boolean output = HIGH;
+    output = !output;
+    digitalWrite(LED_BUILTIN, output);
 }

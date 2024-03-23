@@ -24,8 +24,11 @@
 #include <sensor_msgs/msg/imu.h>
 #include <geometry_msgs/msg/twist.h>
 #include <geometry_msgs/msg/vector3.h>
+#include <std_msgs/msg/bool.h>
+#include <std_msgs/msg/int8.h>
 
 #include "config.h"
+#include "logger.h"
 #include "motor.h"
 #include "kinematics.h"
 #include "pid.h"
@@ -34,18 +37,55 @@
 #define ENCODER_USE_INTERRUPTS
 #define ENCODER_OPTIMIZE_INTERRUPTS
 #include "encoder.h"
+#include "util.h"
+#include "steering.h"
+#include "traxxas_remctl.h"
 
-#define RCCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){rclErrorLoop();}}
-#define RCSOFTCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){}}
+const int ERR_BLINK_GENERAL = 2;
+const int ERR_BLINK_IMU = 3;
+
+#define DRIVER_CONTROL
+
+#define RCCHECK(fn)                          \
+    {                                        \
+        rcl_ret_t temp_rc = fn;              \
+        if ((temp_rc != RCL_RET_OK))         \
+        {                                    \
+            rclErrorLoop(ERR_BLINK_GENERAL); \
+        }                                    \
+    }
+#define RCCHECK_WITH_BLINK_CODE(blink_code, fn) \
+    {                                           \
+        rcl_ret_t temp_rc = fn;                 \
+        if ((temp_rc != RCL_RET_OK))            \
+        {                                       \
+            rclErrorLoop(blink_code);           \
+        }                                       \
+    }
+#define RCSOFTCHECK(fn)              \
+    {                                \
+        rcl_ret_t temp_rc = fn;      \
+        if ((temp_rc != RCL_RET_OK)) \
+        {                            \
+        }                            \
+    }
 #define EXECUTE_EVERY_N_MS(MS, X)  do { \
   static volatile int64_t init = -1; \
   if (init == -1) { init = uxr_millis();} \
   if (uxr_millis() - init > MS) { X; init = uxr_millis();} \
 } while (0)
 
+enum class DriverControlMode { Manual, Auto };
+
 rcl_publisher_t odom_publisher;
 rcl_publisher_t imu_publisher;
 rcl_subscription_t twist_subscriber;
+
+#if defined(DRIVER_CONTROL)
+rcl_subscription_t driver_control_subscriber;
+
+std_msgs__msg__Int8 driver_control_msg;
+#endif
 
 nav_msgs__msg__Odometry odom_msg;
 sensor_msgs__msg__Imu imu_msg;
@@ -60,6 +100,9 @@ rcl_timer_t control_timer;
 unsigned long long time_offset = 0;
 unsigned long prev_cmd_time = 0;
 unsigned long prev_odom_update = 0;
+bool micro_ros_init_successful = false;
+
+DriverControlMode driver_control_mode = DriverControlMode::Auto;
 
 enum states 
 {
@@ -69,20 +112,19 @@ enum states
   AGENT_DISCONNECTED
 } state;
 
-Encoder motor1_encoder(MOTOR1_ENCODER_A, MOTOR1_ENCODER_B, COUNTS_PER_REV1, MOTOR1_ENCODER_INV);
-Encoder motor2_encoder(MOTOR2_ENCODER_A, MOTOR2_ENCODER_B, COUNTS_PER_REV2, MOTOR2_ENCODER_INV);
-Encoder motor3_encoder(MOTOR3_ENCODER_A, MOTOR3_ENCODER_B, COUNTS_PER_REV3, MOTOR3_ENCODER_INV);
-Encoder motor4_encoder(MOTOR4_ENCODER_A, MOTOR4_ENCODER_B, COUNTS_PER_REV4, MOTOR4_ENCODER_INV);
+// Encoder motor1_encoder(MOTOR1_ENCODER_A, MOTOR1_ENCODER_B, COUNTS_PER_REV1, MOTOR1_ENCODER_INV);
 
 Motor motor1_controller(PWM_FREQUENCY, PWM_BITS, MOTOR1_INV, MOTOR1_PWM, MOTOR1_IN_A, MOTOR1_IN_B);
-Motor motor2_controller(PWM_FREQUENCY, PWM_BITS, MOTOR2_INV, MOTOR2_PWM, MOTOR2_IN_A, MOTOR2_IN_B);
-Motor motor3_controller(PWM_FREQUENCY, PWM_BITS, MOTOR3_INV, MOTOR3_PWM, MOTOR3_IN_A, MOTOR3_IN_B);
-Motor motor4_controller(PWM_FREQUENCY, PWM_BITS, MOTOR4_INV, MOTOR4_PWM, MOTOR4_IN_A, MOTOR4_IN_B);
+// Motor motor2_controller(PWM_FREQUENCY, PWM_BITS, MOTOR2_INV, MOTOR2_PWM, MOTOR2_IN_A, MOTOR2_IN_B);
 
 PID motor1_pid(PWM_MIN, PWM_MAX, K_P, K_I, K_D);
-PID motor2_pid(PWM_MIN, PWM_MAX, K_P, K_I, K_D);
-PID motor3_pid(PWM_MIN, PWM_MAX, K_P, K_I, K_D);
-PID motor4_pid(PWM_MIN, PWM_MAX, K_P, K_I, K_D);
+
+// Steering motor
+Motor motor_str_controller(PWM_FREQUENCY, PWM_BITS, MOTOR_STR_INV, MOTOR_STR_PWM, MOTOR_STR_IN_A, MOTOR_STR_IN_B);
+
+Steering steering(STEERING_FULL_RANGE_DEG, motor_str_controller);
+
+Traxxas_RemCtl traxxas_remote(true, true);
 
 Kinematics kinematics(
     Kinematics::LINO_BASE, 
@@ -90,14 +132,15 @@ Kinematics kinematics(
     MAX_RPM_RATIO, 
     MOTOR_OPERATING_VOLTAGE, 
     MOTOR_POWER_MAX_VOLTAGE, 
-    WHEEL_DIAMETER, 
+    WHEEL_DIAMETER,
+    FR_WHEELS_DISTANCE,
     LR_WHEELS_DISTANCE
 );
 
 Odometry odometry;
 IMU imu;
 
-void setup() 
+void setup()
 {
     pinMode(LED_PIN, OUTPUT);
 
@@ -110,8 +153,14 @@ void setup()
         }
     }
     
+    micro_ros_init_successful = false;
+
     Serial.begin(115200);
     set_microros_serial_transports(Serial);
+    motor1_controller.init();
+    motor_str_controller.init();
+    traxxas_remote.setup();
+    flashLED(2);
 }
 
 void loop() {
@@ -147,7 +196,7 @@ void controlCallback(rcl_timer_t * timer, int64_t last_call_time)
 {
     RCLC_UNUSED(last_call_time);
     if (timer != NULL) 
-    {
+    {        
        moveBase();
        publishData();
     }
@@ -159,6 +208,45 @@ void twistCallback(const void * msgin)
 
     prev_cmd_time = millis();
 }
+
+#if defined(DRIVER_CONTROL)
+void setDriverControlMode(DriverControlMode mode)
+{
+    if (driver_control_mode != mode)
+    {
+        driver_control_mode = mode;
+        Logger::log_message(Logger::LogLevel::Info, "Driver control mode changed to %s.", 
+                            mode == DriverControlMode::Manual ? "Manual" : "Auto");
+        if (mode == DriverControlMode::Manual)
+        {
+            steering.enable_steering_wheel();
+        }
+        else
+        {
+            steering.enable_external_control();
+        }
+    }        
+}
+
+DriverControlMode ConvertDriverControlMsgToEnum(uint8_t mode)
+{
+    switch (mode)
+    {
+        case 0: return DriverControlMode::Manual;
+        case 1: return DriverControlMode::Auto;
+    }
+    return DriverControlMode::Manual;
+}
+
+void driverControlCallback(const void *msgin)
+{
+    auto mode = ConvertDriverControlMsgToEnum(driver_control_msg.data);
+    if (driver_control_mode != mode)
+    {
+        setDriverControlMode(mode);
+    }
+}
+#endif
 
 bool createEntities()
 {
@@ -181,6 +269,18 @@ bool createEntities()
         ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Imu),
         "imu/data"
     ));
+
+    Logger::create_logger(node);   
+
+#if defined(DRIVER_CONTROL)
+    // subscribe to driver control mode
+    RCCHECK(rclc_subscription_init_default(
+        &driver_control_subscriber,
+        &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Bool),
+        "driver_control_mode"));
+#endif
+
     // create twist command subscriber
     RCCHECK(rclc_subscription_init_default( 
         &twist_subscriber, 
@@ -196,8 +296,20 @@ bool createEntities()
         RCL_MS_TO_NS(control_timeout),
         controlCallback
     ));
+
     executor = rclc_executor_get_zero_initialized_executor();
-    RCCHECK(rclc_executor_init(&executor, &support.context, 2, & allocator));
+    // 3 handles = 2 subscribers + 1 timer
+    RCCHECK(rclc_executor_init(&executor, &support.context, 3, & allocator));
+
+#if defined(DRIVER_CONTROL)
+    RCCHECK(rclc_executor_add_subscription(
+        &executor,
+        &driver_control_subscriber,
+        &driver_control_msg,
+        &driverControlCallback,
+        ON_NEW_DATA));
+#endif
+
     RCCHECK(rclc_executor_add_subscription(
         &executor, 
         &twist_subscriber, 
@@ -205,12 +317,13 @@ bool createEntities()
         &twistCallback, 
         ON_NEW_DATA
     ));
+
     RCCHECK(rclc_executor_add_timer(&executor, &control_timer));
 
     // synchronize time with the agent
     syncTime();
     digitalWrite(LED_PIN, HIGH);
-
+    micro_ros_init_successful = true;
     return true;
 }
 
@@ -221,6 +334,11 @@ bool destroyEntities()
 
     rcl_publisher_fini(&odom_publisher, &node);
     rcl_publisher_fini(&imu_publisher, &node);
+
+#if defined(DRIVER_CONTROL)
+    rcl_subscription_fini(&driver_control_subscriber, &node);
+#endif
+
     rcl_subscription_fini(&twist_subscriber, &node);
     rcl_node_fini(&node);
     rcl_timer_fini(&control_timer);
@@ -229,6 +347,8 @@ bool destroyEntities()
 
     digitalWrite(LED_PIN, HIGH);
     
+    micro_ros_init_successful = false;
+
     return true;
 }
 
@@ -239,48 +359,125 @@ void fullStop()
     twist_msg.angular.z = 0.0;
 
     motor1_controller.brake();
-    motor2_controller.brake();
-    motor3_controller.brake();
-    motor4_controller.brake();
+    // motor2_controller.brake();
+    // motor3_controller.brake();
+    // motor4_controller.brake();
+}
+
+float steer(float steering_angle)
+{
+    float angle_deg = -steering_angle * 180.0 / M_PI;
+    angle_deg = steering.set_position_deg(angle_deg);
+    return -angle_deg * M_PI / 180.0;
+}
+
+float getSteeringPos()
+{
+    return -steering.get_position_deg() * M_PI / 180.0;
+}
+
+bool directionChange(float cur_rpm, float req_rpm)
+{
+    return abs(cur_rpm) > 1.0 && sgn(cur_rpm) != sgn(req_rpm);
+}
+
+// For converting twist msg to Ackermann x vel and steering angle
+// See convertTransRotVelToSteeringAngle() in 
+// https://github.com/rst-tu-dortmund/teb_local_planner/blob/melodic-devel/src/teb_local_planner_ros.cpp
+float rotational_vel_to_steering_angle(float x_vel, float w_vel, float wheelbase)
+{
+    if (x_vel == 0.0 || w_vel == 0.0)
+    {
+        return 0.0;
+    }
+    float radius = x_vel / w_vel;
+
+    if (fabs(radius) < STEERING_MIN_TURN_RADIUS)
+    {
+        radius = STEERING_MIN_TURN_RADIUS * sgn(radius);
+    }
+
+    return atan(wheelbase / radius);
 }
 
 void moveBase()
 {
-    // brake if there's no command received, or when it's only the first command sent
-    if(((millis() - prev_cmd_time) >= 200)) 
-    {
-        twist_msg.linear.x = 0.0;
-        twist_msg.linear.y = 0.0;
-        twist_msg.angular.z = 0.0;
-
-        digitalWrite(LED_PIN, HIGH);
-    }
-    // get the required rpm for each motor based on required velocities, and base used
-    Kinematics::rpm req_rpm = kinematics.getRPM(
-        twist_msg.linear.x, 
-        twist_msg.linear.y, 
-        twist_msg.angular.z
-    );
-
     // get the current speed of each motor
-    float current_rpm1 = motor1_encoder.getRPM();
-    float current_rpm2 = motor2_encoder.getRPM();
-    float current_rpm3 = motor3_encoder.getRPM();
-    float current_rpm4 = motor4_encoder.getRPM();
+    float current_rpm1 = 0; // motor1_encoder.getRPM();    
+    float steering_angle = 0.0;
 
-    // the required rpm is capped at -/+ MAX_RPM to prevent the PID from having too much error
-    // the PWM value sent to the motor driver is the calculated PID based on required RPM vs measured RPM
-    motor1_controller.spin(motor1_pid.compute(req_rpm.motor1, current_rpm1));
-    motor2_controller.spin(motor2_pid.compute(req_rpm.motor2, current_rpm2));
-    motor3_controller.spin(motor3_pid.compute(req_rpm.motor3, current_rpm3));
-    motor4_controller.spin(motor4_pid.compute(req_rpm.motor4, current_rpm4));
+    traxxas_remote.update();
 
-    Kinematics::velocities current_vel = kinematics.getVelocities(
-        current_rpm1, 
-        current_rpm2, 
-        current_rpm3, 
-        current_rpm4
-    );
+    bool estop = traxxas_remote.estop_asserted() && driver_control_mode == DriverControlMode::Auto;
+
+#if defined(DRIVER_CONTROL)
+    // Handle Manual drive mode from Traxxas Remote
+    if (driver_control_mode == DriverControlMode::Manual)
+    {
+        motor1_controller.spin(traxxas_remote.throttle_pwm());
+        steering.set_position(traxxas_remote.steering_pwm());
+        EXECUTE_EVERY_N_MS(240, Logger::log_message(Logger::LogLevel::Debug, "Throttle: %d%, Steering: %d%", 
+            traxxas_remote.throttle_percent(), traxxas_remote.steering_percent()););
+    }
+    else // Auto mode or disabled
+#endif
+    {
+        float speed_x = 0.0;
+        float steering_angle = 0.0;
+
+        // Handle twist msg input (driven by the twist telop or a
+        // navigation controller)
+
+        // brake if there's no command received, or when it's only the first command sent
+        if(((millis() - prev_cmd_time) >= 400)) 
+        {
+            digitalWrite(LED_PIN, HIGH);
+        }
+        else
+        {
+            speed_x = twist_msg.linear.x;
+
+            // Calculate steering angle from x velocity, twist and wheelbase
+            // http://wiki.ros.org/teb_local_planner/Tutorials/Planning%20for%20car-like%20robots
+            steering_angle = rotational_vel_to_steering_angle(twist_msg.linear.x, twist_msg.angular.z, FR_WHEELS_DISTANCE);
+            Logger::log_message(Logger::LogLevel::Debug, "Steering angle %f, xve: %f, zvel: %f",
+                steering_angle*180.0/M_PI, twist_msg.linear.x, twist_msg.angular.z);
+        }
+        // get the required rpm for each motor based on required velocities, and base used
+        Kinematics::rpm req_rpm = kinematics.getRPM(
+            speed_x,
+            0,
+            steering_angle);
+            
+        if (estop)
+        {
+            req_rpm.motor1 = 0.0;
+        }
+
+        // with no encoder just copy required rpm to current rpm
+        current_rpm1 = req_rpm.motor1;
+
+        // the required rpm is capped at -/+ MAX_RPM to prevent the PID from having too much error
+        // the PWM value sent to the motor driver is the calculated PID based on required RPM vs measured RPM
+        //motor1_controller.spin(motor1_pid.compute(req_rpm.motor1, current_rpm1));
+        motor1_controller.spin(req_rpm.motor1);
+
+        if (kinematics.getBasePlatform() == Kinematics::ACKERMANN)
+        {
+            steer(steering_angle);
+        }        
+    }
+
+    Kinematics::velocities current_vel;
+    if (kinematics.getBasePlatform() == Kinematics::ACKERMANN)
+    {
+        current_vel = kinematics.getVelocities(getSteeringPos(), current_rpm1);
+    }
+    // else
+    // {
+    //     current_vel = kinematics.getVelocities(current_rpm1, current_rpm2, current_rpm3, current_rpm4);
+    // }
+
 
     unsigned long now = millis();
     float vel_dt = (now - prev_odom_update) / 1000.0;
@@ -291,6 +488,8 @@ void moveBase()
         current_vel.linear_y, 
         current_vel.angular_z
     );
+
+    steering.update(!estop);
 }
 
 void publishData()
@@ -332,11 +531,11 @@ struct timespec getTime()
     return tp;
 }
 
-void rclErrorLoop() 
+void rclErrorLoop(int n_times) 
 {
     while(true)
     {
-        flashLED(2);
+        flashLED(n_times);
     }
 }
 

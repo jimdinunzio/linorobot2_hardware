@@ -231,6 +231,7 @@ class ESC: public MotorInterface
     private:
         Servo motor_;
         int pwm_pin_;
+        int pwm_frequency_;
 
     protected:
         void forward(int pwm) override
@@ -248,15 +249,27 @@ class ESC: public MotorInterface
     public:
         ESC(float pwm_frequency, int pwm_bits, bool invert, int pwm_pin, int unused=-1, int unused2=-1): 
             MotorInterface(invert),
-            pwm_pin_(pwm_pin)
+            pwm_pin_(pwm_pin),
+            pwm_frequency_(pwm_frequency)
         {
-            if (pwm_pin_ < 0) return;
-            motor_.attach(pwm_pin);
-            
+        }
+
+        // This should be called in setup() which is after Adruino main()'s initialization of timers so that
+        // Servo.attach can assign one of those timers.
+        void init()
+        {
+            if (pwm_pin_ < 0) 
+                return;
+
+            motor_.attach(pwm_pin_);
+
+            if (pwm_frequency_ > 0)
+                analogWriteFrequency(pwm_pin_, pwm_frequency_);
+
             //ensure that the motor is in neutral state during bootup
             motor_.writeMicroseconds(1500);
         }
-
+        
         void brake() override
         {
             if (pwm_pin_ < 0) return;
