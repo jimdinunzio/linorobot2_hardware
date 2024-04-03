@@ -40,9 +40,19 @@
 #include "util.h"
 #include "steering.h"
 #include "traxxas_remctl.h"
+#include "bumper.h"
 
 const int ERR_BLINK_GENERAL = 2;
 const int ERR_BLINK_IMU = 3;
+
+const int FR_BUMPER_PIN = 24;
+const int FR_BUMPER_NEG_PIN = 12;
+
+const int OAKD_PAN_SERVO_PIN = 11;
+const int OAKD_TILT_SERVO_PIN = 10;
+
+const int OAKD_PAN_SERVO_HOME = 90;
+const int OAKD_TILT_SERVO_HOME = 90;
 
 #define DRIVER_CONTROL
 
@@ -79,6 +89,8 @@ enum class DriverControlMode { Manual, Auto };
 
 rcl_publisher_t odom_publisher;
 rcl_publisher_t imu_publisher;
+rcl_publisher_t bumper_publisher;
+
 rcl_subscription_t twist_subscriber;
 
 #if defined(DRIVER_CONTROL)
@@ -90,6 +102,11 @@ std_msgs__msg__Int8 driver_control_msg;
 nav_msgs__msg__Odometry odom_msg;
 sensor_msgs__msg__Imu imu_msg;
 geometry_msgs__msg__Twist twist_msg;
+
+rcl_subscription_t oakd_pan_subscriber;
+std_msgs__msg__Int8 oakd_pan_msg;
+rcl_subscription_t oakd_tilt_subscriber;
+std_msgs__msg__Int8 oakd_tilt_msg;
 
 rclc_executor_t executor;
 rclc_support_t support;
@@ -126,6 +143,11 @@ Steering steering(STEERING_FULL_RANGE_DEG, motor_str_controller);
 
 Traxxas_RemCtl traxxas_remote(true, true);
 
+Bumper fr_bumper("front", FR_BUMPER_PIN, FR_BUMPER_NEG_PIN);
+
+Servo oakd_pan_servo;
+Servo oakd_tilt_servo;
+
 Kinematics kinematics(
     Kinematics::LINO_BASE, 
     MOTOR_MAX_RPM, 
@@ -160,6 +182,10 @@ void setup()
     motor1_controller.init();
     motor_str_controller.init();
     traxxas_remote.setup();
+    oakd_pan_servo.attach(OAKD_PAN_SERVO_PIN);
+    oakd_pan_servo.write(OAKD_PAN_SERVO_HOME);
+    oakd_tilt_servo.attach(OAKD_TILT_SERVO_PIN);
+    oakd_tilt_servo.write(OAKD_TILT_SERVO_HOME);
     flashLED(2);
 }
 
@@ -199,6 +225,7 @@ void controlCallback(rcl_timer_t * timer, int64_t last_call_time)
     {        
        moveBase();
        publishData();
+       fr_bumper.publish();
     }
 }
 
@@ -248,13 +275,33 @@ void driverControlCallback(const void *msgin)
 }
 #endif
 
+void oakdPanCallback(const void *msgin)
+{
+    int pan_angle = oakd_pan_msg.data;
+    std::clamp(pan_angle, -90, 90);
+    oakd_pan_servo.write(OAKD_PAN_SERVO_HOME + pan_angle);
+}
+
+void oakdTiltCallback(const void *msgin)
+{
+    int tilt_angle = oakd_tilt_msg.data;
+    std::clamp(tilt_angle, -90, 90);
+
+    oakd_tilt_servo.write(OAKD_TILT_SERVO_HOME + tilt_angle);
+}
+
 bool createEntities()
 {
     allocator = rcl_get_default_allocator();
+    
     //create init_options
     RCCHECK(rclc_support_init(&support, 0, NULL, &allocator));
+    
     // create node
     RCCHECK(rclc_node_init_default(&node, "linorobot_base_node", "", &support));
+    
+    // PUBLISHERS
+
     // create odometry publisher
     RCCHECK(rclc_publisher_init_default( 
         &odom_publisher, 
@@ -262,6 +309,7 @@ bool createEntities()
         ROSIDL_GET_MSG_TYPE_SUPPORT(nav_msgs, msg, Odometry),
         "odom/unfiltered"
     ));
+    
     // create IMU publisher
     RCCHECK(rclc_publisher_init_default( 
         &imu_publisher, 
@@ -270,7 +318,12 @@ bool createEntities()
         "imu/data"
     ));
 
+    // create bumper publisher
+    RCCHECK(fr_bumper.create(node));
+
     Logger::create_logger(node);   
+
+    // SUBSCRIPTIONS
 
 #if defined(DRIVER_CONTROL)
     // subscribe to driver control mode
@@ -288,6 +341,24 @@ bool createEntities()
         ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Twist),
         "cmd_vel"
     ));
+
+    // create oakd pan subscriber
+    RCCHECK(rclc_subscription_init_default( 
+        &oakd_pan_subscriber, 
+        &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int8),
+        "oakd/pan"
+    ));
+
+    // create oakd tilt subscriber
+    RCCHECK(rclc_subscription_init_default( 
+        &oakd_tilt_subscriber, 
+        &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int8),
+        "oakd/tilt"
+    ));
+    // TIMER
+
     // create timer for actuating the motors at 50 Hz (1000/20)
     const unsigned int control_timeout = 20;
     RCCHECK(rclc_timer_init_default( 
@@ -298,8 +369,9 @@ bool createEntities()
     ));
 
     executor = rclc_executor_get_zero_initialized_executor();
-    // 3 handles = 2 subscribers + 1 timer
-    RCCHECK(rclc_executor_init(&executor, &support.context, 3, & allocator));
+    
+    // 5 handles = 4 subscribers + 1 timer
+    RCCHECK(rclc_executor_init(&executor, &support.context, 5, & allocator));
 
 #if defined(DRIVER_CONTROL)
     RCCHECK(rclc_executor_add_subscription(
@@ -318,6 +390,22 @@ bool createEntities()
         ON_NEW_DATA
     ));
 
+    RCCHECK(rclc_executor_add_subscription(
+        &executor, 
+        &oakd_pan_subscriber, 
+        &oakd_pan_msg,
+        &oakdPanCallback, 
+        ON_NEW_DATA
+    ));
+
+    RCCHECK(rclc_executor_add_subscription(
+        &executor, 
+        &oakd_tilt_subscriber, 
+        &oakd_tilt_msg, 
+        &oakdTiltCallback, 
+        ON_NEW_DATA
+    ));
+
     RCCHECK(rclc_executor_add_timer(&executor, &control_timer));
 
     // synchronize time with the agent
@@ -332,6 +420,8 @@ bool destroyEntities()
     rmw_context_t * rmw_context = rcl_context_get_rmw_context(&support.context);
     (void) rmw_uros_set_context_entity_destroy_session_timeout(rmw_context, 0);
 
+    fr_bumper.destroy(node);
+
     rcl_publisher_fini(&odom_publisher, &node);
     rcl_publisher_fini(&imu_publisher, &node);
 
@@ -340,6 +430,9 @@ bool destroyEntities()
 #endif
 
     rcl_subscription_fini(&twist_subscriber, &node);
+    rcl_subscription_fini(&oakd_pan_subscriber, &node);
+    rcl_subscription_fini(&oakd_tilt_subscriber, &node);
+
     rcl_node_fini(&node);
     rcl_timer_fini(&control_timer);
     rclc_executor_fini(&executor);
