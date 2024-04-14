@@ -55,6 +55,7 @@ const int OAKD_PAN_SERVO_HOME = 90;
 const int OAKD_TILT_SERVO_HOME = 90;
 
 #define DRIVER_CONTROL
+//#define PUBLISH_ODOM
 
 #define RCCHECK(fn)                          \
     {                                        \
@@ -87,7 +88,12 @@ const int OAKD_TILT_SERVO_HOME = 90;
 
 enum class DriverControlMode { Manual, Auto };
 
-rcl_publisher_t odom_publisher;
+#ifdef PUBLISH_ODOM
+    rcl_publisher_t odom_publisher;
+    nav_msgs__msg__Odometry odom_msg;
+    unsigned long prev_odom_update = 0;
+#endif
+
 rcl_publisher_t imu_publisher;
 rcl_publisher_t bumper_publisher;
 
@@ -99,7 +105,6 @@ rcl_subscription_t driver_control_subscriber;
 std_msgs__msg__Int8 driver_control_msg;
 #endif
 
-nav_msgs__msg__Odometry odom_msg;
 sensor_msgs__msg__Imu imu_msg;
 geometry_msgs__msg__Twist twist_msg;
 
@@ -116,7 +121,6 @@ rcl_timer_t control_timer;
 
 unsigned long long time_offset = 0;
 unsigned long prev_cmd_time = 0;
-unsigned long prev_odom_update = 0;
 bool micro_ros_init_successful = false;
 
 DriverControlMode driver_control_mode = DriverControlMode::Auto;
@@ -159,8 +163,16 @@ Kinematics kinematics(
     LR_WHEELS_DISTANCE
 );
 
-Odometry odometry;
+#ifdef PUBLISH_ODOM
+    Odometry odometry;
+#endif
+
 IMU imu;
+
+float current_rpm1 = 0.0;
+float current_rpm2 = 0.0;
+float current_rpm3 = 0.0;
+float current_rpm4 = 0.0;
 
 void setup()
 {
@@ -278,14 +290,14 @@ void driverControlCallback(const void *msgin)
 void oakdPanCallback(const void *msgin)
 {
     int pan_angle = oakd_pan_msg.data;
-    std::clamp(pan_angle, -90, 90);
+    std::clamp(pan_angle, -60, 60);
     oakd_pan_servo.write(OAKD_PAN_SERVO_HOME + pan_angle);
 }
 
 void oakdTiltCallback(const void *msgin)
 {
     int tilt_angle = oakd_tilt_msg.data;
-    std::clamp(tilt_angle, -90, 90);
+    std::clamp(tilt_angle, -50, 20);
 
     oakd_tilt_servo.write(OAKD_TILT_SERVO_HOME + tilt_angle);
 }
@@ -302,6 +314,7 @@ bool createEntities()
     
     // PUBLISHERS
 
+#ifdef PUBLISH_ODOM
     // create odometry publisher
     RCCHECK(rclc_publisher_init_default( 
         &odom_publisher, 
@@ -309,7 +322,8 @@ bool createEntities()
         ROSIDL_GET_MSG_TYPE_SUPPORT(nav_msgs, msg, Odometry),
         "odom/unfiltered"
     ));
-    
+#endif
+
     // create IMU publisher
     RCCHECK(rclc_publisher_init_default( 
         &imu_publisher, 
@@ -422,7 +436,9 @@ bool destroyEntities()
 
     fr_bumper.destroy(node);
 
+#ifdef PUBLISH_ODOM
     rcl_publisher_fini(&odom_publisher, &node);
+#endif
     rcl_publisher_fini(&imu_publisher, &node);
 
 #if defined(DRIVER_CONTROL)
@@ -495,8 +511,11 @@ float rotational_vel_to_steering_angle(float x_vel, float w_vel, float wheelbase
 
 void moveBase()
 {
+#ifdef PUBLISH_ODOM
     // get the current speed of each motor
-    float current_rpm1 = 0; // motor1_encoder.getRPM();    
+    current_rpm1 = motor1_encoder.getRPM();
+#endif
+
     float steering_angle = 0.0;
 
     traxxas_remote.update();
@@ -509,8 +528,8 @@ void moveBase()
     {
         motor1_controller.spin(traxxas_remote.throttle_pwm());
         steering.set_position(traxxas_remote.steering_pwm());
-        EXECUTE_EVERY_N_MS(240, Logger::log_message(Logger::LogLevel::Debug, "Throttle: %d%, Steering: %d%", 
-            traxxas_remote.throttle_percent(), traxxas_remote.steering_percent()););
+        //EXECUTE_EVERY_N_MS(240, Logger::log_message(Logger::LogLevel::Debug, "Throttle: %d%, Steering: %d%", 
+        //    traxxas_remote.throttle_percent(), traxxas_remote.steering_percent()););
     }
     else // Auto mode or disabled
 #endif
@@ -541,19 +560,24 @@ void moveBase()
             speed_x,
             0,
             steering_angle);
-            
+
+#ifdef PUBLISH_ODOM
+        // Don't drive motor in the opposite direction until it stops
+        if (directionChange(current_rpm1, req_rpm.motor1) || estop)
+        {
+            req_rpm.motor1 = 0.0;
+        }
+        // the required rpm is capped at -/+ MAX_RPM to prevent the PID from having too much error
+        // the PWM value sent to the motor driver is the calculated PID based on required RPM vs measured RPM
+        motor1_controller.spin(motor1_pid.compute(req_rpm.motor1, current_rpm1));
+#else
         if (estop)
         {
             req_rpm.motor1 = 0.0;
         }
 
-        // with no encoder just copy required rpm to current rpm
-        current_rpm1 = req_rpm.motor1;
-
-        // the required rpm is capped at -/+ MAX_RPM to prevent the PID from having too much error
-        // the PWM value sent to the motor driver is the calculated PID based on required RPM vs measured RPM
-        //motor1_controller.spin(motor1_pid.compute(req_rpm.motor1, current_rpm1));
         motor1_controller.spin(req_rpm.motor1);
+#endif
 
         if (kinematics.getBasePlatform() == Kinematics::ACKERMANN)
         {
@@ -561,16 +585,16 @@ void moveBase()
         }        
     }
 
+#ifdef PUBLISH_ODOM
     Kinematics::velocities current_vel;
     if (kinematics.getBasePlatform() == Kinematics::ACKERMANN)
     {
         current_vel = kinematics.getVelocities(getSteeringPos(), current_rpm1);
     }
-    // else
-    // {
-    //     current_vel = kinematics.getVelocities(current_rpm1, current_rpm2, current_rpm3, current_rpm4);
-    // }
-
+    else
+    {
+        current_vel = kinematics.getVelocities(current_rpm1, current_rpm2, current_rpm3, current_rpm4);
+    }
 
     unsigned long now = millis();
     float vel_dt = (now - prev_odom_update) / 1000.0;
@@ -581,25 +605,33 @@ void moveBase()
         current_vel.linear_y, 
         current_vel.angular_z
     );
+#endif
 
     steering.update(!estop);
 }
 
 void publishData()
 {
+#ifdef PUBLISH_ODOM
     odom_msg = odometry.getData();
+#endif
+
     imu_msg = imu.getData();
 
     struct timespec time_stamp = getTime();
 
+#ifdef PUBLISH_ODOM
     odom_msg.header.stamp.sec = time_stamp.tv_sec;
     odom_msg.header.stamp.nanosec = time_stamp.tv_nsec;
+#endif
 
     imu_msg.header.stamp.sec = time_stamp.tv_sec;
     imu_msg.header.stamp.nanosec = time_stamp.tv_nsec;
 
     RCSOFTCHECK(rcl_publish(&imu_publisher, &imu_msg, NULL));
+#ifdef PUBLISH_ODOM
     RCSOFTCHECK(rcl_publish(&odom_publisher, &odom_msg, NULL));
+#endif
 }
 
 void syncTime()
