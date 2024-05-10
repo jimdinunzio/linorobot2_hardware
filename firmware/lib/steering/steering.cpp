@@ -4,6 +4,7 @@
 
 #include "config.h"
 #include "steering.h"
+//#include "logger.h"
 
 #undef DEBUG_PRINTS
 
@@ -13,9 +14,10 @@ namespace
 }
 
 Steering::Steering(uint16_t full_range_deg, MotorInterface &motor) 
-    : limit_left_(PWM_MIN),
-    limit_right_(PWM_MAX),
-    pwm_per_deg_((float)(PWM_MAX - PWM_MIN)/(float)full_range_deg),
+    : limit_left_(STEERING_FULL_LEFT_PWM),
+    limit_right_(STEERING_FULL_RIGHT_PWM),
+    pwm_per_deg_right_(STEERING_FULL_RIGHT_PWM / ((float)full_range_deg / 2)),
+    pwm_per_deg_left_(-STEERING_FULL_LEFT_PWM / ((float)full_range_deg / 2)),
     motor_(motor),
     main_state_(State::kExternal),
     target_pwm_(0),
@@ -69,7 +71,12 @@ int16_t Steering::set_position(int16_t target_pwm)
 
 float Steering::set_position_deg(float target_pos_deg)
 {
-    int16_t target_pwm = target_pos_deg * pwm_per_deg_;
+    int16_t target_pwm;
+    if (target_pos_deg > 0)
+        target_pwm = target_pos_deg * pwm_per_deg_right_;
+    else
+        target_pwm = target_pos_deg * pwm_per_deg_left_;
+
     if (main_state_ == State::kExternal) {
         if (target_pwm < limit_left_) {
             target_pwm = limit_left_;
@@ -78,7 +85,8 @@ float Steering::set_position_deg(float target_pos_deg)
         }            
     }
     target_pwm_ = target_pwm;
-    return target_pwm_ / pwm_per_deg_;
+
+    return target_pwm_ / (target_pos_deg > 0 ? pwm_per_deg_right_ : pwm_per_deg_left_);
 }
 
 long Steering::apply_position()
@@ -92,8 +100,6 @@ long Steering::apply_position()
         target_pwm_ = limit_right_;
     }
 
-    //Serial.print("new target_pwm_ = ");
-    //Serial.println(target_pwm_);
     motor_.spin(target_pwm_);
     pwm_ = target_pwm_;
 

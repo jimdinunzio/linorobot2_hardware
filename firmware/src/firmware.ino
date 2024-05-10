@@ -487,8 +487,9 @@ float getSteeringPos()
 
 bool directionChange(float cur_rpm, float req_rpm)
 {
-    return abs(cur_rpm) > 1.0 && sgn(cur_rpm) != sgn(req_rpm);
+    return abs(cur_rpm) > 1.0 && sgnf(cur_rpm) != sgnf(req_rpm);
 }
+
 
 // For converting twist msg to Ackermann x vel and steering angle
 // See convertTransRotVelToSteeringAngle() in 
@@ -503,10 +504,28 @@ float rotational_vel_to_steering_angle(float x_vel, float w_vel, float wheelbase
 
     if (fabs(radius) < STEERING_MIN_TURN_RADIUS)
     {
-        radius = STEERING_MIN_TURN_RADIUS * sgn(radius);
+        radius = STEERING_MIN_TURN_RADIUS * sgnf(radius);
     }
 
     return atan(wheelbase / radius);
+}
+
+// RPM to PWM conversion
+// This is a quadratic fit based on human measured data on the Traxxas TRX-4 Sport wheel rotations / s
+int rpm2pwm(float rpm)
+{
+    int pwm = 0;
+
+    if (rpm > 0.0)
+    {
+        pwm = 68.02266 + 0.4708083 * rpm + 0.0002057336 * rpm * rpm;
+    }
+    else if (rpm < 0.0)
+    {
+        pwm = -59.18312 + 0.6483976 * rpm + 0.002168269 * rpm * rpm;
+    }
+
+    return pwm;
 }
 
 void moveBase()
@@ -552,9 +571,10 @@ void moveBase()
             // Calculate steering angle from x velocity, twist and wheelbase
             // http://wiki.ros.org/teb_local_planner/Tutorials/Planning%20for%20car-like%20robots
             steering_angle = rotational_vel_to_steering_angle(twist_msg.linear.x, twist_msg.angular.z, FR_WHEELS_DISTANCE);
-            Logger::log_message(Logger::LogLevel::Debug, "Steering angle %f, xve: %f, zvel: %f",
-                steering_angle*180.0/M_PI, twist_msg.linear.x, twist_msg.angular.z);
+            // Logger::log_message(Logger::LogLevel::Debug, "Steering angle %f, xvel: %f, zvel: %f",
+            //     steering_angle*180.0/M_PI, twist_msg.linear.x, twist_msg.angular.z);
         }
+
         // get the required rpm for each motor based on required velocities, and base used
         Kinematics::rpm req_rpm = kinematics.getRPM(
             speed_x,
@@ -576,12 +596,18 @@ void moveBase()
             req_rpm.motor1 = 0.0;
         }
 
-        motor1_controller.spin(req_rpm.motor1);
+        int pwm = rpm2pwm(req_rpm.motor1);
+        
+        // Logger::log_message(Logger::LogLevel::Debug, "req_rpm = %f, pwm = %d",
+        //     req_rpm.motor1, pwm);
+    
+        motor1_controller.spin(pwm);
 #endif
 
         if (kinematics.getBasePlatform() == Kinematics::ACKERMANN)
         {
-            steer(steering_angle);
+            if (speed_x != 0.0) // don't change steering when robot is not moving because angle is always 0
+                steer(steering_angle);
         }        
     }
 

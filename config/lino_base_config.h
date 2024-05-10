@@ -65,7 +65,10 @@ ROBOT ORIENTATION
 
 #define STEERING_FULL_RANGE_DEG   80        // Steering range in degrees
 #define STEERING_HALF_RANGE_DEG   (STEERING_FULL_RANGE_DEG/2)
-#define STEERING_MIN_TURN_RADIUS  FR_WHEELS_DISTANCE / tan(STEERING_HALF_RANGE_DEG * PI / 180) // Min turning radius of the robot
+#define STEERING_MIN_TURN_RADIUS  (FR_WHEELS_DISTANCE / tan(STEERING_HALF_RANGE_DEG * PI / 180)) // Min turning radius of the robot (0.372m)
+#define STEERING_FULL_RIGHT_PWM   460
+#define STEERING_FULL_LEFT_PWM    -400
+
 // INVERT ENCODER COUNTS
 // #define MOTOR1_ENCODER_INV false 
 // #define MOTOR2_ENCODER_INV false 

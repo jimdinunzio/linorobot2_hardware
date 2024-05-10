@@ -1,8 +1,6 @@
 
 #include <vector>
 
-#define NEUTRAL_PWM 1500
-
 class Traxxas_RemCtl
 {
     public:
@@ -13,8 +11,8 @@ class Traxxas_RemCtl
 
         void update();
 
-        int throttle_pwm() const { return throttle_pwm_ - NEUTRAL_PWM; } 
-        int steering_pwm() const { return steering_pwm_ - NEUTRAL_PWM; }
+        int throttle_pwm() const { return throttle_pwm_ - PWM_NEUTRAL; } 
+        int steering_pwm() const { return steering_pwm_ - PWM_NEUTRAL; }
         int throttle_percent();
         int steering_percent();
 
@@ -27,7 +25,9 @@ class Traxxas_RemCtl
         bool steering_enabled() const { return steering_enabled_; }
 
     private:
-        
+
+        static const int PWM_NEUTRAL = 1500;
+                
         static void calc_throttle_isr();
         static void calc_steering_isr();
 
