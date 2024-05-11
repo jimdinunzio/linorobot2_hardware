@@ -145,6 +145,8 @@ Constants' Meaning:
 
 - **MECANUM** - 4 wheel drive robots using mecanum wheels.
 
+- **ACKERMANN** - 2 or 4 wheel drive robots using Ackermann car like steering.
+
 *MOTOR DRIVERS*
 - **USE_GENERIC_2_IN_MOTOR_DRIVER** - Motor drivers that have EN (pwm) pin, and 2 direction pins (usually DIRA, DIRB pins).
 
