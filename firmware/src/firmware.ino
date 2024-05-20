@@ -44,6 +44,7 @@
 
 const int ERR_BLINK_GENERAL = 2;
 const int ERR_BLINK_IMU = 3;
+const int INITED_BLINK = 2;
 
 const int FR_BUMPER_PIN = 24;
 const int FR_BUMPER_NEG_PIN = 12;
@@ -143,6 +144,8 @@ PID motor1_pid(PWM_MIN, PWM_MAX, K_P, K_I, K_D);
 // Steering motor
 Motor motor_str_controller(PWM_FREQUENCY, PWM_BITS, MOTOR_STR_INV, MOTOR_STR_PWM, MOTOR_STR_IN_A, MOTOR_STR_IN_B);
 
+const float MAX_TURN_PWM_CORRECTION = 18.0f;
+
 Steering steering(STEERING_FULL_RANGE_DEG, motor_str_controller);
 
 Traxxas_RemCtl traxxas_remote(true, true);
@@ -183,7 +186,7 @@ void setup()
     {
         while(1)
         {
-            flashLED(3);
+            flashLED(ERR_BLINK_IMU);
         }
     }
     
@@ -198,7 +201,7 @@ void setup()
     oakd_pan_servo.write(OAKD_PAN_SERVO_HOME);
     oakd_tilt_servo.attach(OAKD_TILT_SERVO_PIN);
     oakd_tilt_servo.write(OAKD_TILT_SERVO_HOME);
-    flashLED(2);
+    flashLED(INITED_BLINK);
 }
 
 void loop() {
@@ -510,9 +513,10 @@ float rotational_vel_to_steering_angle(float x_vel, float w_vel, float wheelbase
     return atan(wheelbase / radius);
 }
 
+
 // RPM to PWM conversion
 // This is a quadratic fit based on human measured data on the Traxxas TRX-4 Sport wheel rotations / s
-int rpm2pwm(float rpm)
+int rpm2pwm(float rpm, float steering_angle)
 {
     int pwm = 0;
 
@@ -523,6 +527,11 @@ int rpm2pwm(float rpm)
     else if (rpm < 0.0)
     {
         pwm = -59.18312 + 0.6483976 * rpm + 0.002168269 * rpm * rpm;
+    }
+
+    if (steering_angle != 0.0)
+    {
+        pwm += MAX_TURN_PWM_CORRECTION * sgnf(rpm) * fabs(steering_angle) / STEERING_HALF_RANGE_RAD;
     }
 
     return pwm;
@@ -571,8 +580,9 @@ void moveBase()
             // Calculate steering angle from x velocity, twist and wheelbase
             // http://wiki.ros.org/teb_local_planner/Tutorials/Planning%20for%20car-like%20robots
             steering_angle = rotational_vel_to_steering_angle(twist_msg.linear.x, twist_msg.angular.z, FR_WHEELS_DISTANCE);
-            // Logger::log_message(Logger::LogLevel::Debug, "Steering angle %f, xvel: %f, zvel: %f",
-            //     steering_angle*180.0/M_PI, twist_msg.linear.x, twist_msg.angular.z);
+
+            //EXECUTE_EVERY_N_MS(240, Logger::log_message(Logger::LogLevel::Debug, "Steering angle %f, xvel: %f, zvel: %f",
+            //     steering_angle*180.0/M_PI, twist_msg.linear.x, twist_msg.angular.z));
         }
 
         // get the required rpm for each motor based on required velocities, and base used
@@ -596,7 +606,7 @@ void moveBase()
             req_rpm.motor1 = 0.0;
         }
 
-        int pwm = rpm2pwm(req_rpm.motor1);
+        int pwm = rpm2pwm(req_rpm.motor1, steering_angle);
         
         // Logger::log_message(Logger::LogLevel::Debug, "req_rpm = %f, pwm = %d",
         //     req_rpm.motor1, pwm);
