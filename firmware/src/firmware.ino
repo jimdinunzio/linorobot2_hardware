@@ -18,14 +18,16 @@
 #include <rcl/rcl.h>
 #include <rcl/error_handling.h>
 #include <rclc/rclc.h>
+#include <rclc/service.h>
 #include <rclc/executor.h>
 
 #include <nav_msgs/msg/odometry.h>
 #include <sensor_msgs/msg/imu.h>
+#include <sensor_msgs/msg/magnetic_field.h>
 #include <geometry_msgs/msg/twist.h>
-#include <geometry_msgs/msg/vector3.h>
 #include <std_msgs/msg/bool.h>
 #include <std_msgs/msg/int8.h>
+#include <linorobot2_interfaces/srv/calibrate_mag.h>
 
 #include "config.h"
 #include "logger.h"
@@ -57,6 +59,16 @@ const int OAKD_TILT_SERVO_HOME = 90;
 
 #define DRIVER_CONTROL
 //#define PUBLISH_ODOM
+
+
+#define RCCHECKLOG(fn)                        \
+    {                                         \
+        rcl_ret_t temp_rc = fn;                \
+        if ((temp_rc != RCL_RET_OK))           \
+        {                                     \
+            Logger::log_message(Logger::LogLevel::Error, "Failed to execute function %s, error = %d.", #fn, temp_rc); \
+        }                                     \
+    }
 
 #define RCCHECK(fn)                          \
     {                                        \
@@ -96,6 +108,7 @@ enum class DriverControlMode { Manual, Auto };
 #endif
 
 rcl_publisher_t imu_publisher;
+rcl_publisher_t mag_publisher;
 rcl_publisher_t bumper_publisher;
 
 rcl_subscription_t twist_subscriber;
@@ -107,6 +120,7 @@ std_msgs__msg__Int8 driver_control_msg;
 #endif
 
 sensor_msgs__msg__Imu imu_msg;
+sensor_msgs__msg__MagneticField mag_msg;
 geometry_msgs__msg__Twist twist_msg;
 
 rcl_subscription_t oakd_pan_subscriber;
@@ -119,6 +133,11 @@ rclc_support_t support;
 rcl_allocator_t allocator;
 rcl_node_t node;
 rcl_timer_t control_timer;
+
+// add a service called calibrateMag
+rcl_service_t calibrate_mag_service;
+linorobot2_interfaces__srv__CalibrateMag_Request calibrate_mag_req;
+linorobot2_interfaces__srv__CalibrateMag_Response calibrate_mag_res;
 
 unsigned long long time_offset = 0;
 unsigned long prev_cmd_time = 0;
@@ -180,19 +199,21 @@ float current_rpm4 = 0.0;
 void setup()
 {
     pinMode(LED_PIN, OUTPUT);
+    Serial.begin(115200);
 
     bool imu_ok = imu.init();
     if(!imu_ok)
     {
+        std::string errStr = imu.getErrorStr();
         while(1)
         {
+            Serial.printf("Error initializing IMU: %s", errStr.c_str());
             flashLED(ERR_BLINK_IMU);
         }
     }
-    
+        
     micro_ros_init_successful = false;
 
-    Serial.begin(115200);
     set_microros_serial_transports(Serial);
     motor1_controller.init();
     motor_str_controller.init();
@@ -305,6 +326,16 @@ void oakdTiltCallback(const void *msgin)
     oakd_tilt_servo.write(OAKD_TILT_SERVO_HOME + tilt_angle);
 }
 
+void calibrateMagCallback(const void *request, void *response)
+{
+    linorobot2_interfaces__srv__CalibrateMag_Request* req_in = 
+    (linorobot2_interfaces__srv__CalibrateMag_Request *)request;
+    linorobot2_interfaces__srv__CalibrateMag_Response* res_in = 
+    (linorobot2_interfaces__srv__CalibrateMag_Response *) response;
+    
+    imu.calibrateMag(req_in, res_in);
+}
+
 bool createEntities()
 {
     allocator = rcl_get_default_allocator();
@@ -332,8 +363,21 @@ bool createEntities()
         &imu_publisher, 
         &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Imu),
+    // if we have magnetomter, use imu/data_raw for madgwick filter
+#ifndef USE_FAKE_MAG
+        "imu/data_raw"
+#else
         "imu/data"
+#endif
     ));
+#ifndef USE_FAKE_MAG
+    RCCHECK(rclc_publisher_init_default(
+        &mag_publisher,
+        &node,
+        ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, MagneticField),
+        "imu/mag"
+    ));
+#endif
 
     // create bumper publisher
     RCCHECK(fr_bumper.create(node));
@@ -385,10 +429,18 @@ bool createEntities()
         controlCallback
     ));
 
+    // SERVICES
+    calibrate_mag_service = rcl_get_zero_initialized_service();
+    RCCHECK(rclc_service_init_default(
+        &calibrate_mag_service,
+        &node,
+        ROSIDL_GET_SRV_TYPE_SUPPORT(linorobot2_interfaces, srv, CalibrateMag),
+        "calibrate_mag"));
+
     executor = rclc_executor_get_zero_initialized_executor();
     
-    // 5 handles = 4 subscribers + 1 timer
-    RCCHECK(rclc_executor_init(&executor, &support.context, 5, & allocator));
+    // 6 handles = 4 subscribers + 1 service + 1 timer
+    RCCHECK(rclc_executor_init(&executor, &support.context, 6, & allocator));
 
 #if defined(DRIVER_CONTROL)
     RCCHECK(rclc_executor_add_subscription(
@@ -423,6 +475,9 @@ bool createEntities()
         ON_NEW_DATA
     ));
 
+    RCCHECK(rclc_executor_add_service(&executor, &calibrate_mag_service, 
+        &calibrate_mag_req, &calibrate_mag_res, calibrateMagCallback));
+
     RCCHECK(rclc_executor_add_timer(&executor, &control_timer));
 
     // synchronize time with the agent
@@ -443,6 +498,9 @@ bool destroyEntities()
     rcl_publisher_fini(&odom_publisher, &node);
 #endif
     rcl_publisher_fini(&imu_publisher, &node);
+#ifndef USE_FAKE_MAG
+    RCSOFTCHECK(rcl_publisher_fini(&mag_publisher, &node));
+#endif
 
 #if defined(DRIVER_CONTROL)
     rcl_subscription_fini(&driver_control_subscriber, &node);
@@ -451,6 +509,7 @@ bool destroyEntities()
     rcl_subscription_fini(&twist_subscriber, &node);
     rcl_subscription_fini(&oakd_pan_subscriber, &node);
     rcl_subscription_fini(&oakd_tilt_subscriber, &node);
+    rcl_service_fini(&calibrate_mag_service, &node);
 
     rcl_node_fini(&node);
     rcl_timer_fini(&control_timer);
@@ -653,6 +712,13 @@ void publishData()
 #endif
 
     imu_msg = imu.getData();
+    mag_msg = imu.getMagneticField();
+#ifdef MAG_BIAS
+    const float mag_bias[3] = MAG_BIAS;
+    mag_msg.magnetic_field.x -= mag_bias[0];
+    mag_msg.magnetic_field.y -= mag_bias[1];
+    mag_msg.magnetic_field.z -= mag_bias[2];
+#endif
 
     struct timespec time_stamp = getTime();
 
@@ -664,7 +730,15 @@ void publishData()
     imu_msg.header.stamp.sec = time_stamp.tv_sec;
     imu_msg.header.stamp.nanosec = time_stamp.tv_nsec;
 
+#ifndef USE_FAKE_MAG
+    mag_msg.header.stamp.sec = time_stamp.tv_sec;
+    mag_msg.header.stamp.nanosec = time_stamp.tv_nsec;
+#endif
+
     RCSOFTCHECK(rcl_publish(&imu_publisher, &imu_msg, NULL));
+#ifndef USE_FAKE_MAG
+    RCSOFTCHECK(rcl_publish(&mag_publisher, &mag_msg, NULL));
+#endif
 #ifdef PUBLISH_ODOM
     RCSOFTCHECK(rcl_publish(&odom_publisher, &odom_msg, NULL));
 #endif

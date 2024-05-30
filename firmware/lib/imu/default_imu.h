@@ -41,6 +41,7 @@ class GY85IMU: public IMUInterface
         // returned vector for sensor reading
         geometry_msgs__msg__Vector3 accel_;
         geometry_msgs__msg__Vector3 gyro_;
+        geometry_msgs__msg__Vector3 mag_;
 
     public:
         GY85IMU()
@@ -97,6 +98,22 @@ class GY85IMU: public IMUInterface
 
             return gyro_;
         }
+
+        geometry_msgs__msg__Vector3 readMagnetometer() override
+        {
+            return mag_;
+        }
+
+        void calibrateMag(const linorobot2_interfaces__srv__CalibrateMag_Request* req,
+                                linorobot2_interfaces__srv__CalibrateMag_Response* res) override
+        {
+        }
+
+        std::string readErrorStr() override
+        {
+            return "";
+        }
+
 };
 
 
@@ -111,6 +128,7 @@ class MPU6050IMU: public IMUInterface
 
         geometry_msgs__msg__Vector3 accel_;
         geometry_msgs__msg__Vector3 gyro_;
+        geometry_msgs__msg__Vector3 mag_;
 
     public:
         MPU6050IMU()
@@ -159,6 +177,21 @@ class MPU6050IMU: public IMUInterface
 
             return gyro_;
         }
+
+        geometry_msgs__msg__Vector3 readMagnetometer() override
+        {
+            return mag_;
+        }
+
+        void calibrateMag(const linorobot2_interfaces__srv__CalibrateMag_Request* req,
+                                linorobot2_interfaces__srv__CalibrateMag_Response* res) override
+        {
+        }
+
+        std::string readErrorStr() override
+        {
+            return "";
+        }
 };
 
 class MPU9150IMU: public IMUInterface 
@@ -172,6 +205,7 @@ class MPU9150IMU: public IMUInterface
 
         geometry_msgs__msg__Vector3 accel_;
         geometry_msgs__msg__Vector3 gyro_;
+        geometry_msgs__msg__Vector3 mag_;
 
     public:
         MPU9150IMU()
@@ -220,22 +254,43 @@ class MPU9150IMU: public IMUInterface
 
             return gyro_;
         }
+
+        geometry_msgs__msg__Vector3 readMagnetometer() override
+        {
+            return mag_;
+        }        
+
+        void calibrateMag(const linorobot2_interfaces__srv__CalibrateMag_Request* req,
+                                linorobot2_interfaces__srv__CalibrateMag_Response* res) override
+        {
+        }
+        
+        std::string readErrorStr() override
+        {
+            return "";
+        }
 };
 
-class MPU9250IMU: public IMUInterface 
-{
-    private:
-        const float accel_scale_ = 1 / 16384.0;
-        const float gyro_scale_ = 1 / 131.0;
+class MPU9250IMU: public IMUInterface
+{    
+    private:     
 
-        MPU9250 accelerometer_;
-        MPU9250 gyroscope_;
+        #define I2Cclock 400000
+        #define I2Cport Wire
+        
+        #define MPU9250_ADDRESS MPU9250_ADDRESS_AD0   // Use either this line or the next to select which I2C address your device is using
+        //#define MPU9250_ADDRESS MPU9250_ADDRESS_AD1
+
+        MPU9250 mpu9250_;
 
         geometry_msgs__msg__Vector3 accel_;
         geometry_msgs__msg__Vector3 gyro_;
+        geometry_msgs__msg__Vector3 mag_;
 
+        std::string errStr;
+        
     public:
-        MPU9250IMU()
+        MPU9250IMU() : mpu9250_(MPU9250_ADDRESS, I2Cport, I2Cclock)
         {
         }
 
@@ -243,44 +298,140 @@ class MPU9250IMU: public IMUInterface
         {
             Wire.begin();
             bool ret;
-            accelerometer_.initialize();
-            ret = accelerometer_.testConnection();
+            // Read the WHO_AM_I register, this is a good test of communication
+            byte device_id = mpu9250_.readByte(MPU9250_ADDRESS, WHO_AM_I_MPU9250);
+            ret = device_id == 0x38 || device_id == 0x71 || device_id == 0x39 || device_id == 0x73;
             if(!ret)
+            {
+                char errStrBuf[100];
+                sprintf(errStrBuf, "Device ID not recognized as MPU9250: 0x%x", device_id);
+                errStr = errStrBuf;
                 return false;
-
-            gyroscope_.initialize();
-            ret = gyroscope_.testConnection();
-            if(!ret)
+            }
+                    
+            // Start by performing self test and reporting values
+            mpu9250_.MPU9250SelfTest(mpu9250_.selfTest);
+            // Check if mpu9250_.selfTest values are <= 14 and >= -14
+            if (mpu9250_.selfTest[0] <= 14 && mpu9250_.selfTest[0] >= -14 &&
+                mpu9250_.selfTest[1] <= 14 && mpu9250_.selfTest[1] >= -14 &&
+                mpu9250_.selfTest[2] <= 14 && mpu9250_.selfTest[2] >= -14 &&
+                mpu9250_.selfTest[3] <= 14 && mpu9250_.selfTest[3] >= -14 &&
+                mpu9250_.selfTest[4] <= 14 && mpu9250_.selfTest[4] >= -14 &&
+                mpu9250_.selfTest[5] <= 14 && mpu9250_.selfTest[5] >= -14)
+            {
+                // Self-test passed
+            }
+            else
+            {
+                errStr = "MPU9250 Self test failed";
                 return false;
+            }
 
+            // Calibrate gyro and accelerometers, load biases in bias registers
+            mpu9250_.calibrateMPU9250(mpu9250_.gyroBias, mpu9250_.accelBias);
+
+            // Initialize device for active mode read of acclerometer, gyroscope, and
+            // temperature
+            mpu9250_.initMPU9250();
+
+            // Read the WHO_AM_I register of the magnetometer, this is a good test of
+            // communication
+            byte device2_id = mpu9250_.readByte(AK8963_ADDRESS, WHO_AM_I_AK8963);
+            if (device2_id != 0x48)
+            {
+                errStr = "Device ID not recognized as AK8963";
+                return false;
+            }
+
+            // Get magnetometer calibration from AK8963 ROM
+            // Initialize device for active mode read of magnetometer
+            mpu9250_.initAK8963(mpu9250_.factoryMagCalibration);
+
+            // Get sensor resolutions, only need to do this once
+            mpu9250_.getAres();
+            mpu9250_.getGres();
+            mpu9250_.getMres();
+            
             return true;
         }
 
         geometry_msgs__msg__Vector3 readAccelerometer() override
         {
-            int16_t ax, ay, az;
             
-            accelerometer_.getAcceleration(&ax, &ay, &az);
+            mpu9250_.readAccelData(mpu9250_.accelCount);  // Read the x/y/z adc values
 
-            accel_.x = ax * (double) accel_scale_ * g_to_accel_;
-            accel_.y = ay * (double) accel_scale_ * g_to_accel_;
-            accel_.z = az * (double) accel_scale_ * g_to_accel_;
+            // Now we'll calculate the accleration value into actual m/s^2
+            // This depends on scale being set
+            accel_.x = mpu9250_.accelCount[0] * (double) mpu9250_.aRes * g_to_accel_;
+            accel_.y = mpu9250_.accelCount[1] * (double) mpu9250_.aRes * g_to_accel_;
+            accel_.z = mpu9250_.accelCount[2] * (double) mpu9250_.aRes * g_to_accel_;
 
             return accel_;
         }
 
         geometry_msgs__msg__Vector3 readGyroscope() override
         {
-            int16_t gx, gy, gz;
+            mpu9250_.readGyroData(mpu9250_.gyroCount);  // Read the x/y/z adc values
 
-            gyroscope_.getRotation(&gx, &gy, &gz);
-
-            gyro_.x = gx * (double) gyro_scale_ * DEG_TO_RAD;
-            gyro_.y = gy * (double) gyro_scale_ * DEG_TO_RAD;
-            gyro_.z = gz * (double) gyro_scale_ * DEG_TO_RAD;
+            // Calculate the gyro value into actual radians per second
+            // This depends on scale being set
+            gyro_.x = mpu9250_.gyroCount[0] * (double) mpu9250_.gRes * DEG_TO_RAD;
+            gyro_.y = mpu9250_.gyroCount[1] * (double) mpu9250_.gRes * DEG_TO_RAD;
+            gyro_.z = mpu9250_.gyroCount[2] * (double) mpu9250_.gRes * DEG_TO_RAD;
 
             return gyro_;
         }
+
+        geometry_msgs__msg__Vector3 readMagnetometer() override
+        {
+            mpu9250_.readMagData(mpu9250_.magCount);  // Read the x/y/z adc values
+
+            // Calculate the magnetometer values in teslas
+            // Include factory calibration per data sheet and user environmental
+            // corrections
+            // Get actual magnetometer value, this depends on scale being set
+            mag_.x = (mpu9250_.magCount[0] * mpu9250_.mRes * mpu9250_.factoryMagCalibration[0] - mpu9250_.magBias[0]) *
+                mpu9250_.magScale[0] * (double) mgauss_to_tesla_;
+            mag_.y = (mpu9250_.magCount[1] * mpu9250_.mRes * mpu9250_.factoryMagCalibration[1] - mpu9250_.magBias[1]) *
+                mpu9250_.magScale[1] * (double) mgauss_to_tesla_;
+            mag_.z = (mpu9250_.magCount[2] * mpu9250_.mRes * mpu9250_.factoryMagCalibration[2] - mpu9250_.magBias[2]) * 
+                mpu9250_.magScale[2] * (double) mgauss_to_tesla_;
+
+            return mag_;
+        }
+
+        void calibrateMag(const linorobot2_interfaces__srv__CalibrateMag_Request* req,
+                                linorobot2_interfaces__srv__CalibrateMag_Response* res) override
+        {
+            // The next call delays for 4 seconds, and then records about 15 seconds of
+            // data to calculate bias and scale.
+            if (req->mag_scale.x == 0 && req->mag_scale.y == 0 && req->mag_scale.z == 0 
+                || req->mag_bias.x == 0 && req->mag_bias.y == 0 && req->mag_bias.z == 0)
+                mpu9250_.magCalMPU9250(mpu9250_.magBias, mpu9250_.magScale);
+            else
+            {
+                mpu9250_.magBias[0] = req->mag_bias.x;
+                mpu9250_.magBias[1] = req->mag_bias.y;
+                mpu9250_.magBias[2] = req->mag_bias.z;
+
+                mpu9250_.magScale[0] = req->mag_scale.x;
+                mpu9250_.magScale[1] = req->mag_scale.y;
+                mpu9250_.magScale[2] = req->mag_scale.z;
+            }
+
+            res->mag_bias.x = mpu9250_.magBias[0];
+            res->mag_bias.y = mpu9250_.magBias[1];
+            res->mag_bias.z = mpu9250_.magBias[2];
+
+            res->mag_scale.x = mpu9250_.magScale[0];
+            res->mag_scale.y = mpu9250_.magScale[1];
+            res->mag_scale.z = mpu9250_.magScale[2];
+        }
+
+        std::string readErrorStr() override
+        {
+            return errStr;
+        }        
 };
 
 class FakeIMU: public IMUInterface 
@@ -288,6 +439,7 @@ class FakeIMU: public IMUInterface
     private:
         geometry_msgs__msg__Vector3 accel_;
         geometry_msgs__msg__Vector3 gyro_;
+        geometry_msgs__msg__Vector3 mag_;
 
     public:
         FakeIMU()
@@ -307,6 +459,21 @@ class FakeIMU: public IMUInterface
         geometry_msgs__msg__Vector3 readGyroscope() override
         {
             return gyro_;
+        }
+
+        geometry_msgs__msg__Vector3 readMagnetometer() override
+        {
+            return mag_;
+        }
+
+        std::string readErrorStr() override
+        {
+            return "";
+        }
+
+        void calibrateMag(const linorobot2_interfaces__srv__CalibrateMag_Request* req,
+                                linorobot2_interfaces__srv__CalibrateMag_Response* res) override
+        {
         }
 };
 

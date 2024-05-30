@@ -1,0 +1,7 @@
+#request if 0,0,0 is sent for either mag_bias or mag_scale, the node will run mag calibration
+geometry_msgs/Vector3 mag_bias
+geometry_msgs/Vector3 mag_scale
+---
+#response returns the mag scale values
+geometry_msgs/Vector3 mag_bias
+geometry_msgs/Vector3 mag_scale

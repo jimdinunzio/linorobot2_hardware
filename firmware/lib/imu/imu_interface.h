@@ -16,15 +16,17 @@
 #define IMU_INTERFACE
 
 #include <sensor_msgs/msg/imu.h>
+#include <sensor_msgs/msg/magnetic_field.h>
+#include <linorobot2_interfaces/srv/calibrate_mag.h>
+#include <string>
 
 class IMUInterface
 {
     protected:
         sensor_msgs__msg__Imu imu_msg_;
         const float g_to_accel_ = 9.81;
-        const float mgauss_to_utesla_ = 0.1;
-        const float utesla_to_tesla_ = 0.000001;
-
+        const float mgauss_to_tesla_ = 0.0000001;
+        
         float accel_cov_ = 0.00001;
         float gyro_cov_ = 0.00001;
         const int sample_size_ = 40;
@@ -58,6 +60,12 @@ class IMUInterface
 
         virtual geometry_msgs__msg__Vector3 readAccelerometer() = 0;
         virtual geometry_msgs__msg__Vector3 readGyroscope() = 0;
+        virtual geometry_msgs__msg__Vector3 readMagnetometer() = 0;
+        virtual void calibrateMag(const linorobot2_interfaces__srv__CalibrateMag_Request* req,
+                                linorobot2_interfaces__srv__CalibrateMag_Response* res) = 0;
+
+        virtual std::string readErrorStr() = 0;
+
         virtual bool startSensor() = 0;
 
         bool init()
@@ -67,6 +75,22 @@ class IMUInterface
                 calibrateGyro();
 
             return sensor_ok;
+        }
+
+        std::string getErrorStr()
+        {
+            return readErrorStr();
+        }
+
+        sensor_msgs__msg__MagneticField getMagneticField()
+        {
+            sensor_msgs__msg__MagneticField mag_msg;
+            mag_msg.magnetic_field = readMagnetometer();
+            mag_msg.magnetic_field_covariance[0] = 0.00001;
+            mag_msg.magnetic_field_covariance[4] = 0.00001;
+            mag_msg.magnetic_field_covariance[8] = 0.00001;
+
+            return mag_msg;
         }
 
         sensor_msgs__msg__Imu getData()
