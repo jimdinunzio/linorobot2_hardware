@@ -31,7 +31,7 @@ class IMUInterface
         float gyro_cov_ = 0.00001;
         const int sample_size_ = 40;
 
-        geometry_msgs__msg__Vector3 gyro_cal_;
+        geometry_msgs__msg__Vector3 gyro_cal_ = {0};
 
         void calibrateGyro()
         {
@@ -62,7 +62,8 @@ class IMUInterface
         virtual geometry_msgs__msg__Vector3 readGyroscope() = 0;
         virtual geometry_msgs__msg__Vector3 readMagnetometer() = 0;
         virtual void calibrateMag(const linorobot2_interfaces__srv__CalibrateMag_Request* req,
-                                linorobot2_interfaces__srv__CalibrateMag_Response* res) = 0;
+                                linorobot2_interfaces__srv__CalibrateMag_Response* res, 
+                                void (*moveCallback)()) = 0;
 
         virtual std::string readErrorStr() = 0;
 

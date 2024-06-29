@@ -43,6 +43,7 @@
 #include "steering.h"
 #include "traxxas_remctl.h"
 #include "bumper.h"
+#include "default_calib.h"
 
 const int ERR_BLINK_GENERAL = 2;
 const int ERR_BLINK_IMU = 3;
@@ -58,8 +59,8 @@ const int OAKD_PAN_SERVO_HOME = 90;
 const int OAKD_TILT_SERVO_HOME = 90;
 
 #define DRIVER_CONTROL
-//#define PUBLISH_ODOM
-
+#define PUBLISH_ODOM
+//#define FAKE_ODOM
 
 #define RCCHECKLOG(fn)                        \
     {                                         \
@@ -153,7 +154,9 @@ enum states
   AGENT_DISCONNECTED
 } state;
 
-// Encoder motor1_encoder(MOTOR1_ENCODER_A, MOTOR1_ENCODER_B, COUNTS_PER_REV1, MOTOR1_ENCODER_INV);
+#ifdef PUBLISH_ODOM
+    Encoder motor1_encoder(MOTOR1_ENCODER_A, MOTOR1_ENCODER_B, COUNTS_PER_REV1, MOTOR1_ENCODER_INV);
+#endif
 
 Motor motor1_controller(PWM_FREQUENCY, PWM_BITS, MOTOR1_INV, MOTOR1_PWM, MOTOR1_IN_A, MOTOR1_IN_B);
 // Motor motor2_controller(PWM_FREQUENCY, PWM_BITS, MOTOR2_INV, MOTOR2_PWM, MOTOR2_IN_A, MOTOR2_IN_B);
@@ -211,6 +214,7 @@ void setup()
             flashLED(ERR_BLINK_IMU);
         }
     }
+    imu.calibrateMag(DEFAULT_MAG_BIAS, DEFAULT_MAG_SCALE);
         
     micro_ros_init_successful = false;
 
@@ -326,6 +330,17 @@ void oakdTiltCallback(const void *msgin)
     oakd_tilt_servo.write(OAKD_TILT_SERVO_HOME + tilt_angle);
 }
 
+void moveCallback()
+{
+    EXECUTE_EVERY_N_MS(20, 
+        traxxas_remote.update();
+        motor1_controller.spin(traxxas_remote.throttle_pwm()); 
+        steering.set_position(traxxas_remote.steering_pwm());
+        steering.update(true);
+        Logger::log_message(Logger::LogLevel::Debug, "movecallback Throttle: %d, Steering: %d", traxxas_remote.throttle_pwm(), traxxas_remote.steering_pwm());
+    );
+}
+
 void calibrateMagCallback(const void *request, void *response)
 {
     linorobot2_interfaces__srv__CalibrateMag_Request* req_in = 
@@ -333,7 +348,7 @@ void calibrateMagCallback(const void *request, void *response)
     linorobot2_interfaces__srv__CalibrateMag_Response* res_in = 
     (linorobot2_interfaces__srv__CalibrateMag_Response *) response;
     
-    imu.calibrateMag(req_in, res_in);
+    imu.calibrateMag(req_in, res_in, moveCallback);
 }
 
 bool createEntities()
@@ -363,21 +378,14 @@ bool createEntities()
         &imu_publisher, 
         &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Imu),
-    // if we have magnetomter, use imu/data_raw for madgwick filter
-#ifndef USE_FAKE_MAG
         "imu/data_raw"
-#else
-        "imu/data"
-#endif
     ));
-#ifndef USE_FAKE_MAG
     RCCHECK(rclc_publisher_init_default(
         &mag_publisher,
         &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, MagneticField),
         "imu/mag"
     ));
-#endif
 
     // create bumper publisher
     RCCHECK(fr_bumper.create(node));
@@ -442,6 +450,9 @@ bool createEntities()
     // 6 handles = 4 subscribers + 1 service + 1 timer
     RCCHECK(rclc_executor_init(&executor, &support.context, 6, & allocator));
 
+    // The add order maters, the first added is the first to be run
+    RCCHECK(rclc_executor_add_timer(&executor, &control_timer));
+
 #if defined(DRIVER_CONTROL)
     RCCHECK(rclc_executor_add_subscription(
         &executor,
@@ -478,8 +489,6 @@ bool createEntities()
     RCCHECK(rclc_executor_add_service(&executor, &calibrate_mag_service, 
         &calibrate_mag_req, &calibrate_mag_res, calibrateMagCallback));
 
-    RCCHECK(rclc_executor_add_timer(&executor, &control_timer));
-
     // synchronize time with the agent
     syncTime();
     digitalWrite(LED_PIN, HIGH);
@@ -498,9 +507,7 @@ bool destroyEntities()
     rcl_publisher_fini(&odom_publisher, &node);
 #endif
     rcl_publisher_fini(&imu_publisher, &node);
-#ifndef USE_FAKE_MAG
     RCSOFTCHECK(rcl_publisher_fini(&mag_publisher, &node));
-#endif
 
 #if defined(DRIVER_CONTROL)
     rcl_subscription_fini(&driver_control_subscriber, &node);
@@ -585,7 +592,7 @@ int rpm2pwm(float rpm, float steering_angle)
     }
     else if (rpm < 0.0)
     {
-        pwm = -59.18312 + 0.6483976 * rpm + 0.002168269 * rpm * rpm;
+        pwm = 0.4122096 * rpm - 64.01235;
     }
 
     if (steering_angle != 0.0)
@@ -596,11 +603,66 @@ int rpm2pwm(float rpm, float steering_angle)
     return pwm;
 }
 
+float pwm2rpm(int pwm, float steering_angle)
+{
+    float rpm = 0.0;
+
+    if (steering_angle != 0.0)
+    {
+        if (pwm != 0) 
+        {
+            int adj = MAX_TURN_PWM_CORRECTION * sgni(pwm) * fabs(steering_angle) / STEERING_HALF_RANGE_RAD;
+            if (abs(adj) < abs(pwm))
+            {
+                pwm -= adj;
+            }
+        }
+    }
+
+    float root1 = 0.0;
+    float root2 = 0.0;
+
+    if (pwm > 0)
+    {
+        float a = 0.0002057336;
+        float b = 0.4708083;
+        float c = 68.02266 - pwm;
+
+        float discriminant = b*b - 4*a*c;
+
+        if (discriminant < 0) {
+            // No real roots
+            return 0;
+        }
+
+        root1 = (-b + sqrt(discriminant)) / (2*a);
+        root2 = (-b - sqrt(discriminant)) / (2*a);
+
+    }
+    else if (pwm < 0)
+    {
+        rpm = fmin(0.0, (pwm + 64.01235) / 0.4122096);
+    }
+
+    // Choose the root that has the same sign as pwm
+    if (pwm > 0)
+    {
+        rpm = fmax(0.0, fmax(root1, root2));
+    }
+
+    return rpm;
+}
+
 void moveBase()
 {
 #ifdef PUBLISH_ODOM
-    // get the current speed of each motor
-    current_rpm1 = motor1_encoder.getRPM();
+    #ifdef FAKE_ODOM
+        static float prev_motor1_rpm = 0.0;
+        current_rpm1 = prev_motor1_rpm;
+    #else
+        // get the current speed of each motor
+        current_rpm1 = motor1_encoder.getRPM();
+    #endif
 #endif
 
     float steering_angle = 0.0;
@@ -613,10 +675,16 @@ void moveBase()
     // Handle Manual drive mode from Traxxas Remote
     if (driver_control_mode == DriverControlMode::Manual)
     {
-        motor1_controller.spin(traxxas_remote.throttle_pwm());
-        steering.set_position(traxxas_remote.steering_pwm());
-        //EXECUTE_EVERY_N_MS(240, Logger::log_message(Logger::LogLevel::Debug, "Throttle: %d%, Steering: %d%", 
-        //    traxxas_remote.throttle_percent(), traxxas_remote.steering_percent()););
+        int throttle_pwm = traxxas_remote.throttle_pwm();
+        int steering_pwm = traxxas_remote.steering_pwm();
+        motor1_controller.spin(throttle_pwm);
+        steering.set_position(steering_pwm);
+
+        #ifdef FAKE_ODOM
+            prev_motor1_rpm = pwm2rpm(throttle_pwm, steering.get_position_deg() * M_PI / 180.0);
+            EXECUTE_EVERY_N_MS(240, Logger::log_message(Logger::LogLevel::Debug, "Throttle: %f, Steering: %d%", 
+                prev_motor1_rpm, traxxas_remote.steering_percent()););
+        #endif
     }
     else // Auto mode or disabled
 #endif
@@ -650,7 +718,7 @@ void moveBase()
             0,
             steering_angle);
 
-#ifdef PUBLISH_ODOM
+#if defined(PUBLISH_ODOM) && !defined(FAKE_ODOM)
         // Don't drive motor in the opposite direction until it stops
         if (directionChange(current_rpm1, req_rpm.motor1) || estop)
         {
@@ -671,6 +739,10 @@ void moveBase()
         //     req_rpm.motor1, pwm);
     
         motor1_controller.spin(pwm);
+
+    #ifdef FAKE_ODOM
+        prev_motor1_rpm = req_rpm.motor1;
+    #endif        
 #endif
 
         if (kinematics.getBasePlatform() == Kinematics::ACKERMANN)
@@ -730,17 +802,13 @@ void publishData()
     imu_msg.header.stamp.sec = time_stamp.tv_sec;
     imu_msg.header.stamp.nanosec = time_stamp.tv_nsec;
 
-#ifndef USE_FAKE_MAG
     mag_msg.header.stamp.sec = time_stamp.tv_sec;
     mag_msg.header.stamp.nanosec = time_stamp.tv_nsec;
-#endif
 
     RCSOFTCHECK(rcl_publish(&imu_publisher, &imu_msg, NULL));
-#ifndef USE_FAKE_MAG
     RCSOFTCHECK(rcl_publish(&mag_publisher, &mag_msg, NULL));
-#endif
 #ifdef PUBLISH_ODOM
-    RCSOFTCHECK(rcl_publish(&odom_publisher, &odom_msg, NULL));
+    RCSOFTCHECK(rcl_publish(&odom_publisher, &odom_msg, NULL)); 
 #endif
 }
 

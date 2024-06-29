@@ -53,10 +53,10 @@ ROBOT ORIENTATION
 #define MOTOR_OPERATING_VOLTAGE 16          // motor's operating voltage (used to calculate max RPM)
 #define MOTOR_POWER_MAX_VOLTAGE 12.6          // max voltage of the motor's power source (used to calculate max RPM)
 #define MOTOR_POWER_MEASURED_VOLTAGE 12     // current voltage reading of the power connected to the motor (used for calibration)
-// #define COUNTS_PER_REV1 144000              // wheel1 encoder's no of ticks per rev
-// #define COUNTS_PER_REV2 144000              // wheel2 encoder's no of ticks per rev
-// #define COUNTS_PER_REV3 144000              // wheel3 encoder's no of ticks per rev
-// #define COUNTS_PER_REV4 144000              // wheel4 encoder's no of ticks per rev
+#define COUNTS_PER_REV1 144000              // wheel1 encoder's no of ticks per rev
+#define COUNTS_PER_REV2 144000              // wheel2 encoder's no of ticks per rev
+#define COUNTS_PER_REV3 144000              // wheel3 encoder's no of ticks per rev
+#define COUNTS_PER_REV4 144000              // wheel4 encoder's no of ticks per rev
 #define WHEEL_DIAMETER 0.118                // wheel's diameter in meters
 #define LR_WHEELS_DISTANCE 0.201            // distance between left and right wheels
 #define FR_WHEELS_DISTANCE 0.312            // distance between front and rear wheels
@@ -71,30 +71,30 @@ ROBOT ORIENTATION
 #define STEERING_FULL_LEFT_PWM    -400
 
 // INVERT ENCODER COUNTS
-// #define MOTOR1_ENCODER_INV false 
-// #define MOTOR2_ENCODER_INV false 
-// #define MOTOR3_ENCODER_INV false 
-// #define MOTOR4_ENCODER_INV false 
+#define MOTOR1_ENCODER_INV false 
+#define MOTOR2_ENCODER_INV false 
+#define MOTOR3_ENCODER_INV false 
+#define MOTOR4_ENCODER_INV false 
 
 // INVERT MOTOR DIRECTIONS
 #define MOTOR1_INV false
 #define MOTOR_STR_INV false
-// #define MOTOR2_INV false
-// #define MOTOR3_INV false
-// #define MOTOR4_INV false
+#define MOTOR2_INV false
+#define MOTOR3_INV false
+#define MOTOR4_INV false
 
 // ENCODER PINS
-// #define MOTOR1_ENCODER_A 14
-// #define MOTOR1_ENCODER_B 15 
+#define MOTOR1_ENCODER_A 14
+#define MOTOR1_ENCODER_B 15 
 
-// #define MOTOR2_ENCODER_A 11
-// #define MOTOR2_ENCODER_B 12 
+#define MOTOR2_ENCODER_A 11
+#define MOTOR2_ENCODER_B 12 
 
-// #define MOTOR3_ENCODER_A 17
-// #define MOTOR3_ENCODER_B 16 
+#define MOTOR3_ENCODER_A 17
+#define MOTOR3_ENCODER_B 16 
 
-// #define MOTOR4_ENCODER_A 9
-// #define MOTOR4_ENCODER_B 10
+#define MOTOR4_ENCODER_A 9
+#define MOTOR4_ENCODER_B 10
 
 // MOTOR PINS
 #ifdef USE_GENERIC_2_IN_MOTOR_DRIVER

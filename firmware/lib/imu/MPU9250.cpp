@@ -620,7 +620,7 @@ void MPU9250::MPU9250SelfTest(float * destination)
 
 // Function which accumulates magnetometer data after device initialization.
 // It calculates the bias and scale in the x, y, and z axes.
-void MPU9250::magCalMPU9250(float * bias_dest, float * scale_dest)
+void MPU9250::magCalMPU9250(float * bias_dest, float * scale_dest, void (*moveCallback)())
 {
   uint16_t ii = 0, sample_count = 0;
   int32_t mag_bias[3]  = {0, 0, 0},
@@ -650,6 +650,10 @@ void MPU9250::magCalMPU9250(float * bias_dest, float * scale_dest)
 
   for (ii = 0; ii < sample_count; ii++)
   {
+    if (moveCallback != NULL)
+    {
+      moveCallback();
+    }
     readMagData(mag_temp);  // Read the mag data
 
     for (int jj = 0; jj < 3; jj++)

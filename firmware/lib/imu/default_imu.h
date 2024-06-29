@@ -105,7 +105,8 @@ class GY85IMU: public IMUInterface
         }
 
         void calibrateMag(const linorobot2_interfaces__srv__CalibrateMag_Request* req,
-                                linorobot2_interfaces__srv__CalibrateMag_Response* res) override
+                                linorobot2_interfaces__srv__CalibrateMag_Response* res,
+                                void (*moveCallback)()) override
         {
         }
 
@@ -184,7 +185,8 @@ class MPU6050IMU: public IMUInterface
         }
 
         void calibrateMag(const linorobot2_interfaces__srv__CalibrateMag_Request* req,
-                                linorobot2_interfaces__srv__CalibrateMag_Response* res) override
+                                linorobot2_interfaces__srv__CalibrateMag_Response* res,
+                                void (*moveCallback)()) override
         {
         }
 
@@ -261,7 +263,8 @@ class MPU9150IMU: public IMUInterface
         }        
 
         void calibrateMag(const linorobot2_interfaces__srv__CalibrateMag_Request* req,
-                                linorobot2_interfaces__srv__CalibrateMag_Response* res) override
+                                linorobot2_interfaces__srv__CalibrateMag_Response* res,
+                                void (*moveCallback)()) override
         {
         }
         
@@ -304,7 +307,7 @@ class MPU9250IMU: public IMUInterface
             if(!ret)
             {
                 char errStrBuf[100];
-                sprintf(errStrBuf, "Device ID not recognized as MPU9250: 0x%x", device_id);
+                snprintf(errStrBuf, 99, "Device ID not recognized as MPU9250: 0x%x", device_id);
                 errStr = errStrBuf;
                 return false;
             }
@@ -337,9 +340,11 @@ class MPU9250IMU: public IMUInterface
             // Read the WHO_AM_I register of the magnetometer, this is a good test of
             // communication
             byte device2_id = mpu9250_.readByte(AK8963_ADDRESS, WHO_AM_I_AK8963);
-            if (device2_id != 0x48)
+            if (device2_id != 0x48) 
             {
-                errStr = "Device ID not recognized as AK8963";
+                char errStrBuf[100];
+                snprintf(errStrBuf, 99, "Device ID not recognized as AK8963: 0x%x", device2_id);                
+                errStr = errStrBuf;
                 return false;
             }
 
@@ -400,14 +405,26 @@ class MPU9250IMU: public IMUInterface
             return mag_;
         }
 
+        void calibrateMag(float mag_bias[3], float mag_scale[3])
+        {
+                mpu9250_.magBias[0] = mag_bias[0];
+                mpu9250_.magBias[1] = mag_bias[1];
+                mpu9250_.magBias[2] = mag_bias[2];
+
+                mpu9250_.magScale[0] = mag_scale[0];
+                mpu9250_.magScale[1] = mag_scale[1];
+                mpu9250_.magScale[2] = mag_scale[2];
+        }
+
         void calibrateMag(const linorobot2_interfaces__srv__CalibrateMag_Request* req,
-                                linorobot2_interfaces__srv__CalibrateMag_Response* res) override
+                                linorobot2_interfaces__srv__CalibrateMag_Response* res,
+                                void (*moveCallback)()) override
         {
             // The next call delays for 4 seconds, and then records about 15 seconds of
             // data to calculate bias and scale.
             if (req->mag_scale.x == 0 && req->mag_scale.y == 0 && req->mag_scale.z == 0 
                 || req->mag_bias.x == 0 && req->mag_bias.y == 0 && req->mag_bias.z == 0)
-                mpu9250_.magCalMPU9250(mpu9250_.magBias, mpu9250_.magScale);
+                mpu9250_.magCalMPU9250(mpu9250_.magBias, mpu9250_.magScale, moveCallback);
             else
             {
                 mpu9250_.magBias[0] = req->mag_bias.x;
@@ -472,7 +489,8 @@ class FakeIMU: public IMUInterface
         }
 
         void calibrateMag(const linorobot2_interfaces__srv__CalibrateMag_Request* req,
-                                linorobot2_interfaces__srv__CalibrateMag_Response* res) override
+                                linorobot2_interfaces__srv__CalibrateMag_Response* res,
+                                void (*moveCallback)()) override
         {
         }
 };

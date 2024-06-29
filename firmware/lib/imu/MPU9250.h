@@ -231,7 +231,7 @@ class MPU9250
     uint8_t Mscale = MFS_16BITS;
 
     // 2 for 8 Hz, 6 for 100 Hz continuous magnetometer data read
-    uint8_t Mmode = M_8HZ;
+    uint8_t Mmode = M_100HZ;
 
     
     
@@ -294,7 +294,7 @@ public:
     void initMPU9250();
     void calibrateMPU9250(float * gyroBias, float * accelBias);
     void MPU9250SelfTest(float * destination);
-    void magCalMPU9250(float * dest1, float * dest2);
+    void magCalMPU9250(float * dest1, float * dest2, void (*moveCallback)());
     uint8_t writeByte(uint8_t, uint8_t, uint8_t);
     uint8_t readByte(uint8_t, uint8_t);
     uint8_t readBytes(uint8_t, uint8_t, uint8_t, uint8_t *);
