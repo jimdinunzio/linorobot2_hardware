@@ -36,9 +36,9 @@
 #include "pid.h"
 #include "odometry.h"
 #include "imu.h"
-#define ENCODER_USE_INTERRUPTS
-#define ENCODER_OPTIMIZE_INTERRUPTS
-#include "encoder.h"
+//#define ENCODER_USE_INTERRUPTS
+//#define ENCODER_OPTIMIZE_INTERRUPTS
+//#include "encoder.h"
 #include "util.h"
 #include "steering.h"
 #include "traxxas_remctl.h"
@@ -60,7 +60,7 @@ const int OAKD_TILT_SERVO_HOME = 90;
 
 #define DRIVER_CONTROL
 #define PUBLISH_ODOM
-//#define FAKE_ODOM
+#define FAKE_ODOM
 
 #define RCCHECKLOG(fn)                        \
     {                                         \
@@ -134,6 +134,8 @@ rclc_support_t support;
 rcl_allocator_t allocator;
 rcl_node_t node;
 rcl_timer_t control_timer;
+rcl_timer_t imu_timer;
+rcl_timer_t bumper_timer;
 
 // add a service called calibrateMag
 rcl_service_t calibrate_mag_service;
@@ -154,7 +156,7 @@ enum states
   AGENT_DISCONNECTED
 } state;
 
-#ifdef PUBLISH_ODOM
+#if defined(PUBLISH_ODOM) && !defined(FAKE_ODOM)
     Encoder motor1_encoder(MOTOR1_ENCODER_A, MOTOR1_ENCODER_B, COUNTS_PER_REV1, MOTOR1_ENCODER_INV);
 #endif
 
@@ -258,14 +260,31 @@ void loop() {
     }
 }
 
+void bumperCallback(rcl_timer_t * timer, int64_t last_call_time)
+{
+    RCLC_UNUSED(last_call_time);
+    if (timer != NULL) 
+    {
+        fr_bumper.publish();
+    }
+}
+
+void imuCallback(rcl_timer_t * timer, int64_t last_call_time) 
+{
+    RCLC_UNUSED(last_call_time);
+    if (timer != NULL) 
+    {
+        publishImu();
+    }
+}
+
 void controlCallback(rcl_timer_t * timer, int64_t last_call_time) 
 {
     RCLC_UNUSED(last_call_time);
     if (timer != NULL) 
     {        
        moveBase();
-       publishData();
-       fr_bumper.publish();
+       publishOdom();
     }
 }
 
@@ -337,7 +356,7 @@ void moveCallback()
         motor1_controller.spin(traxxas_remote.throttle_pwm()); 
         steering.set_position(traxxas_remote.steering_pwm());
         steering.update(true);
-        Logger::log_message(Logger::LogLevel::Debug, "movecallback Throttle: %d, Steering: %d", traxxas_remote.throttle_pwm(), traxxas_remote.steering_pwm());
+//        Logger::log_message(Logger::LogLevel::Debug, "movecallback Throttle: %d, Steering: %d", traxxas_remote.throttle_pwm(), traxxas_remote.steering_pwm());
     );
 }
 
@@ -426,10 +445,27 @@ bool createEntities()
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int8),
         "oakd/tilt"
     ));
-    // TIMER
 
-    // create timer for actuating the motors at 50 Hz (1000/20)
-    const unsigned int control_timeout = 20;
+    // create timer for publishing bumper at 10 Hz (1000/100)
+    const unsigned int bumper_timeout = 100;
+    RCCHECK(rclc_timer_init_default(
+        &bumper_timer, 
+        &support,
+        RCL_MS_TO_NS(bumper_timeout),
+        bumperCallback
+    ));
+
+    // create timer for publishing IMU at 10 Hz (1000/100)
+    const unsigned int imu_timeout = 100;
+    RCCHECK(rclc_timer_init_default(
+        &imu_timer, 
+        &support,
+        RCL_MS_TO_NS(imu_timeout),
+        imuCallback
+    ));
+
+    // create timer for actuating the motors at 25 Hz (1000/40)
+    const unsigned int control_timeout = 40;
     RCCHECK(rclc_timer_init_default( 
         &control_timer, 
         &support,
@@ -447,11 +483,14 @@ bool createEntities()
 
     executor = rclc_executor_get_zero_initialized_executor();
     
-    // 6 handles = 4 subscribers + 1 service + 1 timer
-    RCCHECK(rclc_executor_init(&executor, &support.context, 6, & allocator));
+    // 4 subscribers + 1 service + 3 timer
+    const unsigned int executor_handles = 4 + 1 + 3;
+    RCCHECK(rclc_executor_init(&executor, &support.context, executor_handles, & allocator));
 
     // The add order maters, the first added is the first to be run
     RCCHECK(rclc_executor_add_timer(&executor, &control_timer));
+    RCCHECK(rclc_executor_add_timer(&executor, &imu_timer));
+    RCCHECK(rclc_executor_add_timer(&executor, &bumper_timer));
 
 #if defined(DRIVER_CONTROL)
     RCCHECK(rclc_executor_add_subscription(
@@ -507,6 +546,9 @@ bool destroyEntities()
     rcl_publisher_fini(&odom_publisher, &node);
 #endif
     rcl_publisher_fini(&imu_publisher, &node);
+    rcl_publisher_fini(&mag_publisher, &node);
+    rcl_publisher_fini(&bumper_publisher, &node);
+
     RCSOFTCHECK(rcl_publisher_fini(&mag_publisher, &node));
 
 #if defined(DRIVER_CONTROL)
@@ -519,11 +561,13 @@ bool destroyEntities()
     rcl_service_fini(&calibrate_mag_service, &node);
 
     rcl_node_fini(&node);
+    rcl_timer_fini(&bumper_timer);
+    rcl_timer_fini(&imu_timer);
     rcl_timer_fini(&control_timer);
     rclc_executor_fini(&executor);
     rclc_support_fini(&support);
 
-    digitalWrite(LED_PIN, HIGH);
+    digitalWrite(LED_PIN, LOW);
     
     micro_ros_init_successful = false;
 
@@ -681,9 +725,9 @@ void moveBase()
         steering.set_position(steering_pwm);
 
         #ifdef FAKE_ODOM
-            prev_motor1_rpm = pwm2rpm(throttle_pwm, steering.get_position_deg() * M_PI / 180.0);
-            EXECUTE_EVERY_N_MS(240, Logger::log_message(Logger::LogLevel::Debug, "Throttle: %f, Steering: %d%", 
-                prev_motor1_rpm, traxxas_remote.steering_percent()););
+            // prev_motor1_rpm = pwm2rpm(throttle_pwm, steering.get_position_deg() * M_PI / 180.0);
+            // EXECUTE_EVERY_N_MS(240, Logger::log_message(Logger::LogLevel::Debug, "Throttle: %d, Steering: %d%", 
+            //     throttle_pwm, steering_pwm););
         #endif
     }
     else // Auto mode or disabled
@@ -742,11 +786,11 @@ void moveBase()
 
     #ifdef FAKE_ODOM
         prev_motor1_rpm = req_rpm.motor1;
+        {
     #endif        
 #endif
 
         if (kinematics.getBasePlatform() == Kinematics::ACKERMANN)
-        {
             if (speed_x != 0.0) // don't change steering when robot is not moving because angle is always 0
                 steer(steering_angle);
         }        
@@ -777,14 +821,106 @@ void moveBase()
     steering.update(!estop);
 }
 
-void publishData()
+class Vector3D
+    {
+    public:
+        Vector3D() : mArr{} {}
+    
+        Vector3D(double x, double y, double z)
+        {
+            mArr[0] = x;
+            mArr[1] = y;
+            mArr[2] = z;
+        }
+    
+        double dot(const Vector3D& rhs) const
+        {
+            double out = 0;
+            for (int i = 0; i < NUM_DIMENSIONS; ++i)
+            {
+                out = out + mArr[i] * rhs.mArr[i];
+            }
+            return out;
+        }
+    
+        Vector3D operator* (double x) const
+        {
+            Vector3D out;
+            for (int i = 0; i < NUM_DIMENSIONS; ++i)
+            {
+                out.mArr[i] = mArr[i] * x;
+            }
+            return out;
+        }
+    
+        Vector3D operator- (const Vector3D& x) const
+        {
+            Vector3D out;
+            for (int i = 0; i < NUM_DIMENSIONS; ++i)
+            {
+                out.mArr[i] = mArr[i] - x.mArr[i];
+            }
+            return out;
+        }
+        
+        double getX() const {return mArr[0];}
+        double getY() const {return mArr[1];}
+        double getZ() const {return mArr[2];}
+    
+    private:
+        static const int NUM_DIMENSIONS = 3;
+        double mArr[NUM_DIMENSIONS];
+    };
+    
+    Vector3D operator* (double x, const Vector3D& y)
+    {
+        return (y * x);
+    }
+
+
+#if 0
+// mag: magnetic vector
+// accel: acceleration vector (due to gravity)
+double computeYawWithAccel(double mag_x, double mag_y, double mag_z, double accel_x, double accel_y, double accel_z)
 {
-#ifdef PUBLISH_ODOM
-    odom_msg = odometry.getData();
+    const Vector3D vector_mag(mag_x, mag_y, mag_z);
+    const Vector3D vector_down(accel_x, accel_y, accel_z);
+    const Vector3D vector_north = vector_mag - ((vector_mag.dot(vector_down) / vector_down.dot(vector_down)) * vector_down);
+    return atan2(vector_north.getY(), vector_north.getX());
+}
+
+double computeYaw(double mag_x, double mag_y, double mag_z)
+{
+    return atan2(mag_y, mag_x);
+}
+
+void convertYawToQuaternion(double yaw, sensor_msgs__msg__Imu& imu_msg)
+{
+    double roll = 0.0;
+    double pitch = 0.0;
+
+    double cy = cos(yaw * 0.5);
+    double sy = sin(yaw * 0.5);
+
+    imu_msg.orientation.w = cy;
+    imu_msg.orientation.x = 0.0;
+    imu_msg.orientation.y = 0.0;
+    imu_msg.orientation.z = sy;
+
+    imu_msg.orientation_covariance[0] = 0.0025;
+    imu_msg.orientation_covariance[4] = 0.0025;
+    imu_msg.orientation_covariance[8] = 0.0025;
+}
 #endif
 
+void publishImu()
+{
     imu_msg = imu.getData();
     mag_msg = imu.getMagneticField();
+    // double yaw = computeYawWithAccel(mag_msg.magnetic_field.x, mag_msg.magnetic_field.y, mag_msg.magnetic_field.z,
+    //                         imu_msg.linear_acceleration.x, imu_msg.linear_acceleration.y, imu_msg.linear_acceleration.z);
+    //double yaw = computeYaw(mag_msg.magnetic_field.x, mag_msg.magnetic_field.y, mag_msg.magnetic_field.z);
+    //convertYawToQuaternion(yaw, imu_msg);                            
 #ifdef MAG_BIAS
     const float mag_bias[3] = MAG_BIAS;
     mag_msg.magnetic_field.x -= mag_bias[0];
@@ -793,12 +929,6 @@ void publishData()
 #endif
 
     struct timespec time_stamp = getTime();
-
-#ifdef PUBLISH_ODOM
-    odom_msg.header.stamp.sec = time_stamp.tv_sec;
-    odom_msg.header.stamp.nanosec = time_stamp.tv_nsec;
-#endif
-
     imu_msg.header.stamp.sec = time_stamp.tv_sec;
     imu_msg.header.stamp.nanosec = time_stamp.tv_nsec;
 
@@ -806,11 +936,20 @@ void publishData()
     mag_msg.header.stamp.nanosec = time_stamp.tv_nsec;
 
     RCSOFTCHECK(rcl_publish(&imu_publisher, &imu_msg, NULL));
-    RCSOFTCHECK(rcl_publish(&mag_publisher, &mag_msg, NULL));
-#ifdef PUBLISH_ODOM
-    RCSOFTCHECK(rcl_publish(&odom_publisher, &odom_msg, NULL)); 
-#endif
+    RCSOFTCHECK(rcl_publish(&mag_publisher, &mag_msg, NULL));    
 }
+
+#ifdef PUBLISH_ODOM
+void publishOdom()
+{
+    odom_msg = odometry.getData();
+    struct timespec time_stamp = getTime();
+
+    odom_msg.header.stamp.sec = time_stamp.tv_sec;
+    odom_msg.header.stamp.nanosec = time_stamp.tv_nsec;
+    RCSOFTCHECK(rcl_publish(&odom_publisher, &odom_msg, NULL)); 
+}
+#endif
 
 void syncTime()
 {

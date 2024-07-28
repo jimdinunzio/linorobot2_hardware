@@ -12,7 +12,7 @@ static uint32_t ulThrottleStart = 0;
 static uint32_t ulSteeringStart = 0;
 
 // Assign your channel in pins
-#define THROTTLE_IN_ESTOP_PIN 3
+#define THROTTLE_IN_ESTOP_PIN 2
 #define STEERING_IN_PIN 4
 
 // channels have new signals flags
@@ -27,7 +27,7 @@ static uint32_t ulSteeringStart = 0;
 
 Traxxas_RemCtl::Traxxas_RemCtl(bool throttle_enabled, bool steering_enabled)
 : throttle_enabled_(throttle_enabled), steering_enabled_(steering_enabled),
-  throttle_pwm_(0), steering_pwm_(0)
+  throttle_pwm_(PWM_NEUTRAL), steering_pwm_(PWM_NEUTRAL)
 {
 }
 

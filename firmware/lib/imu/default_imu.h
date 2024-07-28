@@ -101,6 +101,7 @@ class GY85IMU: public IMUInterface
 
         geometry_msgs__msg__Vector3 readMagnetometer() override
         {
+            mag_ = {0, 0, 0};
             return mag_;
         }
 
@@ -181,6 +182,7 @@ class MPU6050IMU: public IMUInterface
 
         geometry_msgs__msg__Vector3 readMagnetometer() override
         {
+            mag_ = {0, 0, 0};
             return mag_;
         }
 
@@ -259,6 +261,7 @@ class MPU9150IMU: public IMUInterface
 
         geometry_msgs__msg__Vector3 readMagnetometer() override
         {
+            mag_ = {0, 0, 0};
             return mag_;
         }        
 
@@ -360,6 +363,7 @@ class MPU9250IMU: public IMUInterface
             return true;
         }
 
+        // Per ROS body frame standard x is forward, y is left, z is up
         geometry_msgs__msg__Vector3 readAccelerometer() override
         {
             
@@ -395,25 +399,30 @@ class MPU9250IMU: public IMUInterface
             // Include factory calibration per data sheet and user environmental
             // corrections
             // Get actual magnetometer value, this depends on scale being set
-            mag_.x = (mpu9250_.magCount[0] * mpu9250_.mRes * mpu9250_.factoryMagCalibration[0] - mpu9250_.magBias[0]) *
+            
+            // swap x and y and invert z to switch to ENU inertial frame required by ROS
+            // https://www.ros.org/reps/rep-0103.html#coordinate-frame-conventions
+            double temp_x = (mpu9250_.magCount[0] * mpu9250_.mRes * mpu9250_.factoryMagCalibration[0] - mpu9250_.magBias[0]) *
                 mpu9250_.magScale[0] * (double) mgauss_to_tesla_;
-            mag_.y = (mpu9250_.magCount[1] * mpu9250_.mRes * mpu9250_.factoryMagCalibration[1] - mpu9250_.magBias[1]) *
+            double temp_y = (mpu9250_.magCount[1] * mpu9250_.mRes * mpu9250_.factoryMagCalibration[1] - mpu9250_.magBias[1]) *
                 mpu9250_.magScale[1] * (double) mgauss_to_tesla_;
-            mag_.z = (mpu9250_.magCount[2] * mpu9250_.mRes * mpu9250_.factoryMagCalibration[2] - mpu9250_.magBias[2]) * 
+            mag_.x = temp_y;
+            mag_.y = temp_x;
+            mag_.z = -(mpu9250_.magCount[2] * mpu9250_.mRes * mpu9250_.factoryMagCalibration[2] - mpu9250_.magBias[2]) * 
                 mpu9250_.magScale[2] * (double) mgauss_to_tesla_;
-
+            
             return mag_;
         }
-
+        
         void calibrateMag(float mag_bias[3], float mag_scale[3])
         {
-                mpu9250_.magBias[0] = mag_bias[0];
-                mpu9250_.magBias[1] = mag_bias[1];
-                mpu9250_.magBias[2] = mag_bias[2];
+            mpu9250_.magBias[0] = mag_bias[0];
+            mpu9250_.magBias[1] = mag_bias[1];
+            mpu9250_.magBias[2] = mag_bias[2];
 
-                mpu9250_.magScale[0] = mag_scale[0];
-                mpu9250_.magScale[1] = mag_scale[1];
-                mpu9250_.magScale[2] = mag_scale[2];
+            mpu9250_.magScale[0] = mag_scale[0];
+            mpu9250_.magScale[1] = mag_scale[1];
+            mpu9250_.magScale[2] = mag_scale[2];
         }
 
         void calibrateMag(const linorobot2_interfaces__srv__CalibrateMag_Request* req,

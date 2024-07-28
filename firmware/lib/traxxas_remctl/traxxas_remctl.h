@@ -1,9 +1,12 @@
 
 #include <vector>
+#include <algorithm>
 
 class Traxxas_RemCtl
 {
     public:
+
+        #include <algorithm>
 
         Traxxas_RemCtl(bool throttle_enabled, bool steering_enabled);
 
@@ -11,8 +14,8 @@ class Traxxas_RemCtl
 
         void update();
 
-        int throttle_pwm() const { return throttle_pwm_ - PWM_NEUTRAL; } 
-        int steering_pwm() const { return steering_pwm_ - PWM_NEUTRAL; }
+        int throttle_pwm() const { return std::clamp(throttle_pwm_ - PWM_NEUTRAL, -500, 500); } 
+        int steering_pwm() const { return std::clamp(steering_pwm_ - PWM_NEUTRAL, -500, 500); }
         int throttle_percent();
         int steering_percent();
 
