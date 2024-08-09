@@ -24,7 +24,7 @@ class IMUInterface
 {
     protected:
         sensor_msgs__msg__Imu imu_msg_;
-        const float g_to_accel_ = 9.81;
+        const float g_to_accel_ = 9.80665;
         const float mgauss_to_tesla_ = 0.0000001;
         
         float accel_cov_ = 0.00001;
@@ -65,6 +65,7 @@ class IMUInterface
                                 linorobot2_interfaces__srv__CalibrateMag_Response* res, 
                                 void (*moveCallback)()) = 0;
 
+        virtual void setAccelCalib(float* scale, float* bias) = 0;
         virtual std::string readErrorStr() = 0;
 
         virtual bool startSensor() = 0;

@@ -61,6 +61,7 @@ const int OAKD_TILT_SERVO_HOME = 90;
 #define DRIVER_CONTROL
 #define PUBLISH_ODOM
 #define FAKE_ODOM
+//#define PUBLISH_MAG
 
 #define RCCHECKLOG(fn)                        \
     {                                         \
@@ -109,7 +110,9 @@ enum class DriverControlMode { Manual, Auto };
 #endif
 
 rcl_publisher_t imu_publisher;
-rcl_publisher_t mag_publisher;
+#ifdef PUBLISH_MAG
+    rcl_publisher_t mag_publisher;
+#endif
 rcl_publisher_t bumper_publisher;
 
 rcl_subscription_t twist_subscriber;
@@ -217,6 +220,8 @@ void setup()
         }
     }
     imu.calibrateMag(DEFAULT_MAG_BIAS, DEFAULT_MAG_SCALE);
+    
+    imu.setAccelCalib(ACCEL_SCALE, ACCEL_BIAS);
         
     micro_ros_init_successful = false;
 
@@ -397,15 +402,16 @@ bool createEntities()
         &imu_publisher, 
         &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Imu),
-        "imu/data_raw"
+        "imu/data"
     ));
+#ifdef PUBLISH_MAG
     RCCHECK(rclc_publisher_init_default(
         &mag_publisher,
         &node,
         ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, MagneticField),
         "imu/mag"
     ));
-
+#endif
     // create bumper publisher
     RCCHECK(fr_bumper.create(node));
 
@@ -546,10 +552,10 @@ bool destroyEntities()
     rcl_publisher_fini(&odom_publisher, &node);
 #endif
     rcl_publisher_fini(&imu_publisher, &node);
+#ifdef PUBLISH_MAG
     rcl_publisher_fini(&mag_publisher, &node);
+#endif
     rcl_publisher_fini(&bumper_publisher, &node);
-
-    RCSOFTCHECK(rcl_publisher_fini(&mag_publisher, &node));
 
 #if defined(DRIVER_CONTROL)
     rcl_subscription_fini(&driver_control_subscriber, &node);
@@ -821,112 +827,73 @@ void moveBase()
     steering.update(!estop);
 }
 
-class Vector3D
-    {
-    public:
-        Vector3D() : mArr{} {}
+void computeRollPitch(const geometry_msgs__msg__Vector3& linear_accel, double& roll, double& pitch)
+{
+    roll = atan2(linear_accel.y, linear_accel.z);
+    pitch = atan2(linear_accel.x, sqrt(linear_accel.z * linear_accel.z + linear_accel.y * linear_accel.y));
+}
+
+void computeYaw(double roll, double pitch, const sensor_msgs__msg__MagneticField& mag, double& yaw)
+{
+    double magLength = sqrt(mag.magnetic_field.x * mag.magnetic_field.x + 
+                            mag.magnetic_field.y * mag.magnetic_field.y + 
+                            mag.magnetic_field.z * mag.magnetic_field.z);
     
-        Vector3D(double x, double y, double z)
-        {
-            mArr[0] = x;
-            mArr[1] = y;
-            mArr[2] = z;
-        }
-    
-        double dot(const Vector3D& rhs) const
-        {
-            double out = 0;
-            for (int i = 0; i < NUM_DIMENSIONS; ++i)
-            {
-                out = out + mArr[i] * rhs.mArr[i];
-            }
-            return out;
-        }
-    
-        Vector3D operator* (double x) const
-        {
-            Vector3D out;
-            for (int i = 0; i < NUM_DIMENSIONS; ++i)
-            {
-                out.mArr[i] = mArr[i] * x;
-            }
-            return out;
-        }
-    
-        Vector3D operator- (const Vector3D& x) const
-        {
-            Vector3D out;
-            for (int i = 0; i < NUM_DIMENSIONS; ++i)
-            {
-                out.mArr[i] = mArr[i] - x.mArr[i];
-            }
-            return out;
-        }
-        
-        double getX() const {return mArr[0];}
-        double getY() const {return mArr[1];}
-        double getZ() const {return mArr[2];}
-    
-    private:
-        static const int NUM_DIMENSIONS = 3;
-        double mArr[NUM_DIMENSIONS];
-    };
-    
-    Vector3D operator* (double x, const Vector3D& y)
-    {
-        return (y * x);
+    // Check for zero magnitude to avoid division by zero
+    if (magLength == 0) {
+        yaw = 0; // or some error value
+        return;
     }
+    
+    double normMagVals[3] = {mag.magnetic_field.x / magLength, 
+                             mag.magnetic_field.y / magLength, 
+                             mag.magnetic_field.z / magLength};
+    
+    
+    yaw = atan2(sin(roll) * normMagVals[2] - cos(roll) * normMagVals[1],
+                cos(pitch) * normMagVals[0] + sin(roll) * sin(pitch) * normMagVals[1] + cos(roll) * sin(pitch) * normMagVals[2]);
 
+    // Add 90 degrees to yaw to align with ROS convention ENU, East = 0 degrees
+    yaw += M_PI / 2;  // Add 90 degrees in radians
 
-#if 0
-// mag: magnetic vector
-// accel: acceleration vector (due to gravity)
-double computeYawWithAccel(double mag_x, double mag_y, double mag_z, double accel_x, double accel_y, double accel_z)
-{
-    const Vector3D vector_mag(mag_x, mag_y, mag_z);
-    const Vector3D vector_down(accel_x, accel_y, accel_z);
-    const Vector3D vector_north = vector_mag - ((vector_mag.dot(vector_down) / vector_down.dot(vector_down)) * vector_down);
-    return atan2(vector_north.getY(), vector_north.getX());
+    // Normalize yaw to [-π, π)
+    if (yaw > M_PI) {
+        yaw -= 2 * M_PI;
+    } else if (yaw < -M_PI) {
+        yaw += 2 * M_PI;
+    }                
 }
 
-double computeYaw(double mag_x, double mag_y, double mag_z)
+void convertRollPitchYawToQuaternion(double roll, double pitch, double yaw, sensor_msgs__msg__Imu& imu_msg)
 {
-    return atan2(mag_y, mag_x);
-}
-
-void convertYawToQuaternion(double yaw, sensor_msgs__msg__Imu& imu_msg)
-{
-    double roll = 0.0;
-    double pitch = 0.0;
-
     double cy = cos(yaw * 0.5);
     double sy = sin(yaw * 0.5);
+    double cp = cos(pitch * 0.5);
+    double sp = sin(pitch * 0.5);
+    double cr = cos(roll * 0.5);
+    double sr = sin(roll * 0.5);
 
-    imu_msg.orientation.w = cy;
-    imu_msg.orientation.x = 0.0;
-    imu_msg.orientation.y = 0.0;
-    imu_msg.orientation.z = sy;
+    imu_msg.orientation.w = cy * cp * cr + sy * sp * sr;
+    imu_msg.orientation.x = cy * cp * sr - sy * sp * cr;
+    imu_msg.orientation.y = sy * cp * sr + cy * sp * cr;
+    imu_msg.orientation.z = sy * cp * cr - cy * sp * sr;
 
     imu_msg.orientation_covariance[0] = 0.0025;
     imu_msg.orientation_covariance[4] = 0.0025;
     imu_msg.orientation_covariance[8] = 0.0025;
 }
-#endif
 
 void publishImu()
 {
     imu_msg = imu.getData();
     mag_msg = imu.getMagneticField();
-    // double yaw = computeYawWithAccel(mag_msg.magnetic_field.x, mag_msg.magnetic_field.y, mag_msg.magnetic_field.z,
-    //                         imu_msg.linear_acceleration.x, imu_msg.linear_acceleration.y, imu_msg.linear_acceleration.z);
-    //double yaw = computeYaw(mag_msg.magnetic_field.x, mag_msg.magnetic_field.y, mag_msg.magnetic_field.z);
-    //convertYawToQuaternion(yaw, imu_msg);                            
-#ifdef MAG_BIAS
-    const float mag_bias[3] = MAG_BIAS;
-    mag_msg.magnetic_field.x -= mag_bias[0];
-    mag_msg.magnetic_field.y -= mag_bias[1];
-    mag_msg.magnetic_field.z -= mag_bias[2];
-#endif
+
+    double roll = 0.0;
+    double pitch = 0.0;
+    double yaw = 0.0;
+    computeRollPitch(imu_msg.linear_acceleration, roll, pitch);
+    computeYaw(roll, pitch, mag_msg, yaw);
+    convertRollPitchYawToQuaternion(roll, pitch, yaw, imu_msg); 
 
     struct timespec time_stamp = getTime();
     imu_msg.header.stamp.sec = time_stamp.tv_sec;
@@ -936,7 +903,9 @@ void publishImu()
     mag_msg.header.stamp.nanosec = time_stamp.tv_nsec;
 
     RCSOFTCHECK(rcl_publish(&imu_publisher, &imu_msg, NULL));
-    RCSOFTCHECK(rcl_publish(&mag_publisher, &mag_msg, NULL));    
+#ifdef PUBLISH_MAG
+    RCSOFTCHECK(rcl_publish(&mag_publisher, &mag_msg, NULL));
+#endif
 }
 
 #ifdef PUBLISH_ODOM

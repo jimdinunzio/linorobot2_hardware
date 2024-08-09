@@ -105,6 +105,11 @@ class GY85IMU: public IMUInterface
             return mag_;
         }
 
+
+        void setAccelCalib(float* scale, float* bias) override
+        {
+        }
+
         void calibrateMag(const linorobot2_interfaces__srv__CalibrateMag_Request* req,
                                 linorobot2_interfaces__srv__CalibrateMag_Response* res,
                                 void (*moveCallback)()) override
@@ -192,6 +197,10 @@ class MPU6050IMU: public IMUInterface
         {
         }
 
+        void setAccelCalib(float* scale, float* bias) override
+        {
+        }
+
         std::string readErrorStr() override
         {
             return "";
@@ -271,6 +280,10 @@ class MPU9150IMU: public IMUInterface
         {
         }
         
+        void setAccelCalib(float* scale, float* bias) override
+        {
+        }
+        
         std::string readErrorStr() override
         {
             return "";
@@ -288,6 +301,8 @@ class MPU9250IMU: public IMUInterface
         //#define MPU9250_ADDRESS MPU9250_ADDRESS_AD1
 
         MPU9250 mpu9250_;
+        float accelBias[3] = {0, 0, 0};
+        float accelScale[3] = {1, 1, 1};
 
         geometry_msgs__msg__Vector3 accel_;
         geometry_msgs__msg__Vector3 gyro_;
@@ -298,6 +313,8 @@ class MPU9250IMU: public IMUInterface
     public:
         MPU9250IMU() : mpu9250_(MPU9250_ADDRESS, I2Cport, I2Cclock)
         {
+            accel_cov_ = 0.0016;
+            gyro_cov_ = 0.0001;
         }
 
         bool startSensor() override
@@ -333,8 +350,10 @@ class MPU9250IMU: public IMUInterface
                 return false;
             }
 
-            // Calibrate gyro and accelerometers, load biases in bias registers
-            mpu9250_.calibrateMPU9250(mpu9250_.gyroBias, mpu9250_.accelBias);
+            // Calibrate gyro, load biases in bias registers. Don't calibrate accel because this call requires
+            // that it be perfectly level to ground and it will not in most robots. Scale and Bias values are 
+            // precalculated with 6 position calibration procedure with the IMU mounted in a calibration cube.
+            mpu9250_.calibrateMPU9250(mpu9250_.gyroBias, nullptr);
 
             // Initialize device for active mode read of acclerometer, gyroscope, and
             // temperature
@@ -371,9 +390,9 @@ class MPU9250IMU: public IMUInterface
 
             // Now we'll calculate the accleration value into actual m/s^2
             // This depends on scale being set
-            accel_.x = mpu9250_.accelCount[0] * (double) mpu9250_.aRes * g_to_accel_;
-            accel_.y = mpu9250_.accelCount[1] * (double) mpu9250_.aRes * g_to_accel_;
-            accel_.z = mpu9250_.accelCount[2] * (double) mpu9250_.aRes * g_to_accel_;
+            accel_.x = (mpu9250_.accelCount[0] * (double) mpu9250_.aRes * g_to_accel_ - accelBias[0]) * accelScale[0];
+            accel_.y = (mpu9250_.accelCount[1] * (double) mpu9250_.aRes * g_to_accel_ - accelBias[1]) * accelScale[1];
+            accel_.z = (mpu9250_.accelCount[2] * (double) mpu9250_.aRes * g_to_accel_ - accelBias[2]) * accelScale[2];
 
             return accel_;
         }
@@ -454,6 +473,16 @@ class MPU9250IMU: public IMUInterface
             res->mag_scale.z = mpu9250_.magScale[2];
         }
 
+        void setAccelCalib(float* scale, float* bias) override
+        {
+            accelBias[0] = bias[0];
+            accelBias[1] = bias[1];
+            accelBias[2] = bias[2];
+            accelScale[0] = scale[0];
+            accelScale[1] = scale[1];
+            accelScale[2] = scale[2];
+        }
+
         std::string readErrorStr() override
         {
             return errStr;
@@ -500,6 +529,10 @@ class FakeIMU: public IMUInterface
         void calibrateMag(const linorobot2_interfaces__srv__CalibrateMag_Request* req,
                                 linorobot2_interfaces__srv__CalibrateMag_Response* res,
                                 void (*moveCallback)()) override
+        {
+        }
+
+        void setAccelCalib(float* scale, float* bias) override
         {
         }
 };
