@@ -642,10 +642,10 @@ void MPU9250::magCalMPU9250(float * bias_dest, float * scale_dest, void (*moveCa
   // Make sure resolution has been calculated
   getMres();
 
-  Logger::log_message(Logger::LogLevel::Debug, "Mag Calibration: Wave device in a figure 8 until done!");
-  Logger::log_message(Logger::LogLevel::Debug, "5 seconds to get ready followed by 30 seconds of sampling");
+  Logger::log_message(Logger::LogLevel::Info, "Mag Calibration: Wave device in a figure 8 until done!");
+  Logger::log_message(Logger::LogLevel::Info, "5 seconds to get ready followed by 30 seconds of sampling");
   delay(5000);
-  Logger::log_message(Logger::LogLevel::Debug, "START FIRST AXIS!");
+  Logger::log_message(Logger::LogLevel::Info, "START FIRST AXIS!");
 
   // shoot for ~fifteen seconds of mag data
   // at 8 Hz ODR, new mag data is available every 125 ms
@@ -684,7 +684,7 @@ void MPU9250::magCalMPU9250(float * bias_dest, float * scale_dest, void (*moveCa
       delay(135); // At 8 Hz ODR, new mag data is available every 125 ms
       if (ii > 0 && (ii % 80 == 0))
       {
-        Logger::log_message(Logger::LogLevel::Debug, "SWITCH AXIS #%d", ii / 80); 
+        Logger::log_message(Logger::LogLevel::Info, "SWITCH AXIS #%d", ii / 80); 
       }
     }
     if (Mmode == M_100HZ)
@@ -692,7 +692,7 @@ void MPU9250::magCalMPU9250(float * bias_dest, float * scale_dest, void (*moveCa
       delay(12);  // At 100 Hz ODR, new mag data is available every 10 ms
       if (ii > 0 && (ii % 1000 == 0))
       {
-        Logger::log_message(Logger::LogLevel::Debug, "SWITCH AXIS #%d", ii / 1000); 
+        Logger::log_message(Logger::LogLevel::Info, "SWITCH AXIS #%d", ii / 1000); 
       }
     }
   }

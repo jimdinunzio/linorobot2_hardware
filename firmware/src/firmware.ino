@@ -36,9 +36,6 @@
 #include "pid.h"
 #include "odometry.h"
 #include "imu.h"
-//#define ENCODER_USE_INTERRUPTS
-//#define ENCODER_OPTIMIZE_INTERRUPTS
-//#include "encoder.h"
 #include "util.h"
 #include "steering.h"
 #include "traxxas_remctl.h"
@@ -58,10 +55,20 @@ const int OAKD_TILT_SERVO_PIN = 10;
 const int OAKD_PAN_SERVO_HOME = 90;
 const int OAKD_TILT_SERVO_HOME = 90;
 
+const double mag_yaw_low_pass_alpha = 0.1; // Smoothing factor (0 < alpha < 1, lower means smoother)
+
 #define DRIVER_CONTROL
 #define PUBLISH_ODOM
-#define FAKE_ODOM
+#ifdef PUBLISH_ODOM
+    #define FAKE_ODOM
+#endif
 //#define PUBLISH_MAG
+
+#ifdef PUBLISH_ODOM
+    #define ENCODER_USE_INTERRUPTS
+    #define ENCODER_OPTIMIZE_INTERRUPTS
+    #include "encoder.h"
+#endif
 
 #define RCCHECKLOG(fn)                        \
     {                                         \
@@ -204,6 +211,8 @@ float current_rpm2 = 0.0;
 float current_rpm3 = 0.0;
 float current_rpm4 = 0.0;
 
+double mag_yaw_filtered_heading = 0.0;
+
 void setup()
 {
     pinMode(LED_PIN, OUTPUT);
@@ -289,7 +298,9 @@ void controlCallback(rcl_timer_t * timer, int64_t last_call_time)
     if (timer != NULL) 
     {        
        moveBase();
+#ifdef PUBLISH_ODOM
        publishOdom();
+#endif
     }
 }
 
@@ -731,7 +742,7 @@ void moveBase()
         steering.set_position(steering_pwm);
 
         #ifdef FAKE_ODOM
-            // prev_motor1_rpm = pwm2rpm(throttle_pwm, steering.get_position_deg() * M_PI / 180.0);
+            prev_motor1_rpm = pwm2rpm(throttle_pwm, steering.get_position_deg() * M_PI / 180.0);
             // EXECUTE_EVERY_N_MS(240, Logger::log_message(Logger::LogLevel::Debug, "Throttle: %d, Steering: %d%", 
             //     throttle_pwm, steering_pwm););
         #endif
@@ -792,14 +803,12 @@ void moveBase()
 
     #ifdef FAKE_ODOM
         prev_motor1_rpm = req_rpm.motor1;
-        {
     #endif        
 #endif
 
         if (kinematics.getBasePlatform() == Kinematics::ACKERMANN)
             if (speed_x != 0.0) // don't change steering when robot is not moving because angle is always 0
                 steer(steering_angle);
-        }        
     }
 
 #ifdef PUBLISH_ODOM
@@ -833,6 +842,31 @@ void computeRollPitch(const geometry_msgs__msg__Vector3& linear_accel, double& r
     pitch = atan2(linear_accel.x, sqrt(linear_accel.z * linear_accel.z + linear_accel.y * linear_accel.y));
 }
 
+double normalizeAngle(double angle)
+{
+    // Normalize yaw to [-π, π)
+    if (angle > M_PI) {
+        angle -= 2 * M_PI;
+    } else if (angle < -M_PI) {
+        angle += 2 * M_PI;
+    }
+    return angle;
+}
+
+double applyExponentialMovingAverage(double new_heading, double filtered_heading, double alpha)
+{
+    // Calculate the difference, taking into account the angle wraparound
+    double diff = new_heading - filtered_heading;
+
+    diff = normalizeAngle(diff);
+
+    // Apply the exponential moving average
+    double updated_heading = filtered_heading + alpha * diff;
+
+    // Normalize the result to ensure it's still in the correct range
+    return normalizeAngle(updated_heading);
+}
+
 void computeYaw(double roll, double pitch, const sensor_msgs__msg__MagneticField& mag, double& yaw)
 {
     double magLength = sqrt(mag.magnetic_field.x * mag.magnetic_field.x + 
@@ -849,19 +883,18 @@ void computeYaw(double roll, double pitch, const sensor_msgs__msg__MagneticField
                              mag.magnetic_field.y / magLength, 
                              mag.magnetic_field.z / magLength};
     
+    // Calculate the tilt-compensated magnetic field components
+    double mag_x = cos(pitch) * normMagVals[0] + sin(roll) * sin(pitch) * normMagVals[1] + cos(roll) * sin(pitch) * normMagVals[2];
+    double mag_y = sin(roll) * normMagVals[2] - cos(roll) * normMagVals[1];
     
-    yaw = atan2(sin(roll) * normMagVals[2] - cos(roll) * normMagVals[1],
-                cos(pitch) * normMagVals[0] + sin(roll) * sin(pitch) * normMagVals[1] + cos(roll) * sin(pitch) * normMagVals[2]);
+    // Calculate yaw
+    yaw = atan2(mag_y, mag_x);
 
     // Add 90 degrees to yaw to align with ROS convention ENU, East = 0 degrees
     yaw += M_PI / 2;  // Add 90 degrees in radians
+    yaw = normalizeAngle(yaw);
 
-    // Normalize yaw to [-π, π)
-    if (yaw > M_PI) {
-        yaw -= 2 * M_PI;
-    } else if (yaw < -M_PI) {
-        yaw += 2 * M_PI;
-    }                
+    yaw = mag_yaw_filtered_heading = applyExponentialMovingAverage(yaw, mag_yaw_filtered_heading, mag_yaw_low_pass_alpha);
 }
 
 void convertRollPitchYawToQuaternion(double roll, double pitch, double yaw, sensor_msgs__msg__Imu& imu_msg)
@@ -878,9 +911,9 @@ void convertRollPitchYawToQuaternion(double roll, double pitch, double yaw, sens
     imu_msg.orientation.y = sy * cp * sr + cy * sp * cr;
     imu_msg.orientation.z = sy * cp * cr - cy * sp * sr;
 
-    imu_msg.orientation_covariance[0] = 0.0025;
-    imu_msg.orientation_covariance[4] = 0.0025;
-    imu_msg.orientation_covariance[8] = 0.0025;
+    imu_msg.orientation_covariance[0] = 0.025;
+    imu_msg.orientation_covariance[4] = 0.025;
+    imu_msg.orientation_covariance[8] = 0.025;
 }
 
 void publishImu()

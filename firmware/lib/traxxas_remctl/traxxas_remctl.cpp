@@ -12,7 +12,7 @@ static uint32_t ulThrottleStart = 0;
 static uint32_t ulSteeringStart = 0;
 
 // Assign your channel in pins
-#define THROTTLE_IN_ESTOP_PIN 2
+#define THROTTLE_IN_ESTOP_PIN 3
 #define STEERING_IN_PIN 4
 
 // channels have new signals flags

@@ -309,12 +309,12 @@ class MPU9250IMU: public IMUInterface
         geometry_msgs__msg__Vector3 mag_;
 
         std::string errStr;
-        
+
     public:
         MPU9250IMU() : mpu9250_(MPU9250_ADDRESS, I2Cport, I2Cclock)
         {
-            accel_cov_ = 0.0016;
-            gyro_cov_ = 0.0001;
+            accel_cov_ = 0.016;
+            gyro_cov_ = 0.001;
         }
 
         bool startSensor() override
